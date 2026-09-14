@@ -3,7 +3,7 @@
 XConnect-One ships a minimal native Windows `amd64` path for the standalone
 CLI. It keeps the existing WireGuard-over-VLESS contract: the local WireGuard
 peer sends UDP to `127.0.0.1:<local-port>`, the external Xray process carries
-that UDP stream over VLESS/TLS to the controller-selected gateway, and the
+that UDP stream over VLESS/XHTTP over TLS to the controller-selected gateway, and the
 gateway relays it to WireGuard. The generated WireGuard file is the same
 standard `[Interface]`/`[Peer]` format used by the Linux runtime.
 
@@ -17,7 +17,7 @@ standard `[Interface]`/`[Peer]` format used by the Linux runtime.
   `%ProgramFiles%\WireGuard\` directory.
 - Bootstrap downloads the pinned native `amd64` `xray.exe`, verifies its
   SHA256, and stores it beneath the protected One state directory. Xray must
-  support the VLESS/TLS, XUDP and UDP `dokodemo-door` settings emitted by this
+  support VLESS/XHTTP over TLS and UDP `dokodemo-door` settings emitted by this
   repository.
 - Use a dedicated local NTFS state directory. The runtime protects its
   generated directories and files with a protected DACL granting full access

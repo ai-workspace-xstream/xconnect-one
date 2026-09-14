@@ -1,4 +1,4 @@
-# XConnect Gateway/One data plane and Zero WireGuard-over-VLESS architecture
+# XConnect Gateway/One data plane and Zero WireGuard-over-VLESS/XHTTP architecture
 
 Status: normative design for the standalone XConnect One CLI and XConnect
 Gateway data path. This document separates product ownership from runtime
@@ -13,7 +13,7 @@ then proves the data path before Zero enrollment is introduced:
 
 ```text
 Gateway Xray server + Gateway WireGuard peers
-        ↕ VLESS/TLS/XUDP
+        ↕ VLESS/XHTTP over TLS
 One external xray/tproxy + One WireGuard peer (per platform)
 ```
 
@@ -50,7 +50,7 @@ signed configuration only after the transport baseline passes.
 | Zero `portal` | owner-scoped management UI and BFF requests | credentials, private keys, host runtime execution |
 | XConnect Gateway | Gateway enrollment, signed config verification, Gateway Xray/WireGuard files and lifecycle, peer table and ACK | Portal UI, Zero signing authority, One private keys |
 | XConnect One | registration/join/sync, signed config verification, its WireGuard key/config/lifecycle, external Xray tproxy config/lifecycle and ACK | Gateway role, Zero policy/signing, XConnect APP state or processes |
-| External Xray | VLESS/TLS/XUDP transport for the process started by its owner | Zero data model, peer authorization, address allocation |
+| External Xray | VLESS/XHTTP over TLS transport for the process started by its owner | Zero data model, peer authorization, address allocation |
 | WireGuard | encrypted overlay interface, peer keys, addresses and allowed routes | VLESS transport, policy issuance, identity approval |
 | XConnect APP | its own UI, TUN, Xray/SOCKS/VLESS runtime and plugin host | One's state directory, One's credentials and One-owned interfaces |
 
@@ -82,7 +82,7 @@ to logs, artifacts or the Portal.
 
 | Node | Automated runtime | Required evidence |
 | --- | --- | --- |
-| Linux Gateway | VLESS/TLS Xray server, WireGuard, One public peers, private HTTP marker | TCP/TLS listener, interface, exact peer handshakes |
+| Linux Gateway | VLESS/XHTTP over TLS Xray server, WireGuard, One public peers, private HTTP marker | TCP/TLS listener, interface, exact peer handshakes |
 | Linux One | external `xray/tproxy`, WireGuard, Gateway peer | loopback relay, interface, handshake, ping/HTTP |
 | Windows One | external `xray/tproxy`, WireGuard for Windows, Gateway peer | same as Linux on an authorized LAN host |
 | macOS One | external `xray/tproxy`, `wireguard-go`/WireGuard, Gateway peer | same as Linux with explicit local/admin authorization |
@@ -99,7 +99,7 @@ Portal → owner-scoped BFF → Accounts
 
 The controller chooses an enrolled Gateway and signs a device-bound config.
 The signature binds the network, device, generation, expiry, local loopback
-endpoint, VLESS/TLS transport values and WireGuard peer values. A client must
+endpoint, VLESS/XHTTP over TLS transport values and WireGuard peer values. A client must
 reject unsigned, expired, cross-network, cross-device or replayed config.
 
 ## Gateway runtime
@@ -125,6 +125,17 @@ Gateway WireGuard interface and approved One peers
 
 Gateway WireGuard stores One public keys and their assigned `/32` addresses.
 It must not derive peers from GitOps, Portal input or unverified local files.
+
+The only XConnect transport profile in this baseline is:
+
+```json
+{"kind":"vless-xhttp","port":443,"path":"/xconnect","mode":"auto"}
+```
+
+The Gateway certificate SNI and XHTTP host are supplied by the signed
+configuration. `vless-tls-xudp`, alternate ports and public UDP `51820` are
+rejected by the XConnect runtime contract; the existing non-XConnect `1443`
+service is outside this profile.
 
 ## One runtime
 
@@ -156,7 +167,7 @@ macOS and Windows. It is never a public listener or an XConnect APP endpoint.
 XConnect One WireGuard
   ↓ encrypted UDP
 One-owned external Xray adapter: 127.0.0.1:51830 (dokodemo-door UDP)
-  ↓ VLESS + TLS + XUDP
+  ↓ VLESS/XHTTP over TLS on TCP 443
 Gateway external Xray: public TCP/TLS endpoint
   ↓ local UDP 51820
 Gateway WireGuard
@@ -165,7 +176,7 @@ authorized Zero Trust private network
 ```
 
 WireGuard provides overlay cryptography, device keys, addresses and AllowedIPs.
-Xray carries that encrypted UDP over VLESS/TLS. It does not assign addresses,
+Xray carries that encrypted UDP over VLESS/XHTTP over TLS. It does not assign addresses,
 approve devices or replace the Gateway peer table.
 
 The local adapter configuration is generated from verified signed config and is
@@ -180,11 +191,11 @@ APP-owned or third-party runtime.
 Linux, macOS and Windows use the same independent data-plane pattern:
 
 ```text
-WireGuard → One-owned external Xray tproxy → VLESS/TLS/XUDP → Gateway
+WireGuard → One-owned external Xray tproxy → VLESS/XHTTP over TLS → Gateway
 ```
 
 One writes and starts its protected external `xray/tproxy` process, owns the
-local UDP relay, and uses signed VLESS/TLS details to reach the Gateway. The
+local UDP relay, and uses signed VLESS/XHTTP over TLS details to reach the Gateway. The
 runtime remains external software, but its process and files belong to One's
 explicit state directory.
 
