@@ -11,7 +11,7 @@ XConnect APP，也不实现 macOS host adapter / Packet Tunnel handoff。
 
 ```sh
 curl -fsSL https://install.svc.plus/xconnect-one | \
-  XCONNECT_ONE_VERSION=v0.1.11 bash
+  sudo env XCONNECT_ONE_VERSION=v0.1.13 bash
 ```
 
 环境变量放在管道右侧，才会传给安装脚本；不要把版本号放在
@@ -37,7 +37,7 @@ brew install --formula \
 Windows 在管理员 PowerShell 中执行：
 
 ```powershell
-$env:XCONNECT_ONE_VERSION = 'v0.1.11'
+$env:XCONNECT_ONE_VERSION = 'v0.1.13'
 irm https://install.svc.plus/xconnect-one.ps1 | iex
 ```
 
@@ -45,7 +45,42 @@ Windows 默认安装到 `%ProgramFiles%\XConnect\xconnect-windows-amd64.exe`。�
 只下载精确平台制品、读取同版本 `SHA256SUMS` 并在复制前校验；它不会写入 Zero
 邀请、设备凭据或私钥。
 
-## 受管运行时
+## Gateway 一键安装
+
+Gateway 是独立 Linux relay/service。使用同一安装域名安装已发布并校验的
+Gateway CLI：
+
+```sh
+curl -fsSL https://install.svc.plus/xconnect-gateway | \
+  sudo env XCONNECT_GATEWAY_VERSION=v0.1.6 bash
+```
+
+安装器只复制 Gateway CLI，不执行 Zero enrollment，也不生成长期凭据。安装后
+显式初始化：
+
+```sh
+sudo xconnect-gateway diagnose
+sudo xconnect-gateway init \
+  --state-dir /var/lib/xconnect-gateway \
+  --controller https://accounts-uat.onwalk.net \
+  --gateway-id gw-uat-1
+```
+
+在 Zero Portal 确认 Gateway 公钥并取得一次性邀请后，再执行：
+
+```sh
+sudo xconnect-gateway join \
+  --state-dir /var/lib/xconnect-gateway \
+  --gateway-id gw-uat-1 \
+  'xconnect://join/SHORT_LIVED_INVITE'
+sudo xconnect-gateway up \
+  --state-dir /var/lib/xconnect-gateway \
+  --tls-cert /etc/xconnect-gateway/tls.crt \
+  --tls-key /etc/xconnect-gateway/tls.key
+```
+
+TLS 证书、私钥、VLESS UUID 和 WireGuard 私钥由 Vault/节点受保护目录管理，
+不进入安装命令、GitOps 或数据库。
 
 One CLI 不静态链接 Xray 或 WireGuard，但可以通过显式 bootstrap 准备受管 Xray
 并安装或验证平台 WireGuard 工具：
@@ -54,7 +89,7 @@ One CLI 不静态链接 Xray 或 WireGuard，但可以通过显式 bootstrap 准
 - macOS：受管 Xray，Homebrew `wireguard-tools`、`wireguard-go`；
 - Windows：受管 `xray.exe`、WireGuard for Windows，并以管理员 PowerShell 运行。
 
-Xray 必须支持 VLESS/XHTTP over TLS 和 UDP `dokodemo-door`。One 生成的 WireGuard
+Xray 必须支持 VLESS/XHTTP TLS TCP `443` 和 UDP `dokodemo-door`。One 生成的 WireGuard
 peer Endpoint 指向本机 Xray 的 UDP loopback 入口；不要把 Gateway 的公网
 WireGuard UDP 端口写进 One 配置。
 
@@ -104,6 +139,22 @@ sudo /usr/local/bin/xconnect diagnose --state-dir /var/lib/xconnect-one
 `join` / `sync` 的实际顺序是：获取设备会话、验证签名配置和策略、生成本地
 Xray/WireGuard 配置、启动受 CLI 所有的运行时、读取应用结果并向 Accounts 发送
 ACK。设备私钥只留在本机状态目录。
+
+Gateway 与 One 的简化操作模型保持一致：
+
+```text
+curl | sudo env VERSION=... bash   # 只安装 CLI
+diagnose                         # 检查外部 runtime
+init                             # 仅 Gateway：生成本机 identity/state.json
+join                             # 消费 Zero 一次性邀请
+sync                             # 验证 signed config 并应用
+status                           # 查看本地运行状态
+down                             # 停止自己拥有的 runtime
+```
+
+Windows 使用 `irm ...ps1 | iex` 安装 CLI，并在管理员 PowerShell 中执行同名的
+`diagnose/join/sync/status/down` 生命周期；`init` 仅用于 Gateway。安装器不会
+自动消费邀请或启动网络服务。
 
 ## 闭环验证
 

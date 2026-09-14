@@ -13,8 +13,8 @@ then proves the data path before Zero enrollment is introduced:
 
 ```text
 Gateway Xray server + Gateway WireGuard peers
-        ↕ VLESS/XHTTP over TLS
-One external xray/tproxy + One WireGuard peer (per platform)
+        ↕ VLESS/XHTTP TLS TCP 443
+One platform transport + One WireGuard peer (per platform)
 ```
 
 This lab proves runtime ownership, routing, ports, exact-peer handshakes and
@@ -28,17 +28,22 @@ signed configuration only after the transport baseline passes.
    Gateway selection, policy, enrollment, signed configuration and ACKs.
 2. XConnect Gateway is an independent Linux relay/service. It owns its local
    Gateway Xray and WireGuard runtime.
-3. XConnect One is an independent Linux, macOS and Windows controlled-client
-   CLI. It owns the configuration and lifecycle of its external Xray tproxy and
-   WireGuard processes on every supported desktop platform.
-4. Xray is an external runtime, not XConnect One source code, a bundled
+3. XConnect One is the cross-platform controlled-client product for Linux,
+   macOS, Windows, iOS and Android. Linux/macOS/Windows currently use the
+   standalone CLI and own the configuration/lifecycle of their external
+   transport and WireGuard processes. iOS/Android use a mobile client or the
+   XConnect APP plugin surface while preserving the same Zero enrollment and
+   signed-config contract.
+4. XConnect Gateway currently supports Linux Server only. It is not a
+   supported runtime target for Windows, macOS, iOS or Android.
+5. Xray is an external runtime, not XConnect One source code, a bundled
    library, or a separate XConnect One product. One creates and validates a
    private config for its own process; it must not modify another application's
    Xray config or process.
-5. XConnect APP remains independent. Its TUN, Xray process, SOCKS listener,
+6. XConnect APP remains independent. Its TUN, Xray process, SOCKS listener,
    credentials, state and lifecycle are never read, written, started or
    stopped by One.
-6. GitOps contains only non-sensitive deployment intent. Vault retains
+7. GitOps contains only non-sensitive deployment intent. Vault retains
    signing material, Gateway TLS private keys and other secrets. The Portal
    never receives a WireGuard private key or device credential.
 
@@ -50,7 +55,7 @@ signed configuration only after the transport baseline passes.
 | Zero `portal` | owner-scoped management UI and BFF requests | credentials, private keys, host runtime execution |
 | XConnect Gateway | Gateway enrollment, signed config verification, Gateway Xray/WireGuard files and lifecycle, peer table and ACK | Portal UI, Zero signing authority, One private keys |
 | XConnect One | registration/join/sync, signed config verification, its WireGuard key/config/lifecycle, external Xray tproxy config/lifecycle and ACK | Gateway role, Zero policy/signing, XConnect APP state or processes |
-| External Xray | VLESS/XHTTP over TLS transport for the process started by its owner | Zero data model, peer authorization, address allocation |
+| External Xray | VLESS/XHTTP TLS transport for the process started by its owner | Zero data model, peer authorization, address allocation |
 | WireGuard | encrypted overlay interface, peer keys, addresses and allowed routes | VLESS transport, policy issuance, identity approval |
 | XConnect APP | its own UI, TUN, Xray/SOCKS/VLESS runtime and plugin host | One's state directory, One's credentials and One-owned interfaces |
 
@@ -139,7 +144,9 @@ service is outside this profile.
 
 ## One runtime
 
-The same control-plane CLI contract is used on Linux, macOS and Windows:
+The same control-plane CLI contract is used by the standalone Linux, macOS and
+Windows clients. iOS and Android use the mobile client/plugin surface with the
+same enrollment, signed-config and ACK contract:
 
 ```text
 register or join → sync signed config → verify and compile
@@ -191,7 +198,7 @@ APP-owned or third-party runtime.
 Linux, macOS and Windows use the same independent data-plane pattern:
 
 ```text
-WireGuard → One-owned external Xray tproxy → VLESS/XHTTP over TLS → Gateway
+WireGuard → One-owned external Xray transport → VLESS/XHTTP TLS TCP 443 → Gateway
 ```
 
 One writes and starts its protected external `xray/tproxy` process, owns the
