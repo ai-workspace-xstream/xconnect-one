@@ -8,7 +8,7 @@ This command does not relocate those responsibilities into One.
 
 The fixture follows `iac_modules/vpn-overlay/PRODUCTIZATION_DEVELOPMENT_PLAN.md`
 for one-use invitation hashes, device-local WG private keys, Ed25519 client
-configuration, VLESS/TLS/XUDP and ACKs. Reuse `iac_modules/vpn-overlay` deployment
+configuration, VLESS/XHTTP over TLS and ACKs. Reuse `iac_modules/vpn-overlay` deployment
 and GitOps topology declarations. Do not create a parallel deployment stack or
 store secrets in GitOps. The co-located privileged helper below is a deliberately
 limited substitute for the plan's authenticated gateway agent and signed

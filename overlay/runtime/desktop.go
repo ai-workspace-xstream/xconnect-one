@@ -914,12 +914,17 @@ func renderXrayConfig(config model.Config) ([]byte, error) {
 				"users":   []any{user},
 			}}},
 			"streamSettings": map[string]any{
-				"network":  "tcp",
+				"network":  "xhttp",
 				"security": "tls",
 				"tlsSettings": map[string]any{
 					"serverName":    config.Transport.TLSServerName(),
 					"allowInsecure": false,
 					"fingerprint":   "chrome",
+				},
+				"xhttpSettings": map[string]any{
+					"path": config.Transport.XHTTPPath(),
+					"mode": config.Transport.XHTTPMode(),
+					"host": config.Transport.XHTTPHost(),
 				},
 			},
 		}},

@@ -24,7 +24,7 @@ const (
 	SchemaVersionV1  = 1
 	SchemaVersionV2  = 2
 	ProxyCoreXray    = "xray"
-	TransportVLESS   = "vless-tls-xudp"
+	TransportVLESS   = "vless-xhttp"
 	SignatureEd25519 = "Ed25519"
 	LoopbackHost     = "127.0.0.1"
 	RelayTargetPort  = 51820
@@ -95,6 +95,9 @@ type Transport struct {
 	Loopback Endpoint       `json:"loopback"`
 	Remote   RemoteEndpoint `json:"remote"`
 	AuthID   string         `json:"auth_id"`
+	Path     string         `json:"path,omitempty"`
+	Mode     string         `json:"mode,omitempty"`
+	Host     string         `json:"host,omitempty"`
 }
 
 type Peer struct {
@@ -190,8 +193,17 @@ func (c Config) Validate() error {
 	if c.ProxyCore != ProxyCoreXray {
 		return fault.New(fault.CodeUnsupportedRuntimeCore, "validate signed config core", nil)
 	}
-	if c.Transport.Kind != TransportVLESS || c.Transport.Loopback.Host != LoopbackHost || !validPort(c.Transport.Loopback.Port) || !validHost(c.Transport.Remote.Host) || !validPort(c.Transport.Remote.Port) || !validHost(c.Transport.Remote.ServerName) || !validID(c.Transport.AuthID) {
+	if c.Transport.Kind != TransportVLESS || c.Transport.Loopback.Host != LoopbackHost || c.Transport.Loopback.Port != 51830 || !validHost(c.Transport.Remote.Host) || c.Transport.Remote.Port != 443 || !validHost(c.Transport.Remote.ServerName) || !validID(c.Transport.AuthID) {
 		return fault.New(fault.CodeInvalidSignedConfig, "validate signed config transport", nil)
+	}
+	if c.Transport.Path != "" && (!strings.HasPrefix(c.Transport.Path, "/") || len(c.Transport.Path) > 1024) {
+		return fault.New(fault.CodeInvalidSignedConfig, "validate signed config XHTTP path", nil)
+	}
+	if c.Transport.Mode != "" && c.Transport.Mode != "auto" && c.Transport.Mode != "packet-up" && c.Transport.Mode != "stream-up" {
+		return fault.New(fault.CodeInvalidSignedConfig, "validate signed config XHTTP mode", nil)
+	}
+	if c.Transport.Host != "" && !validHost(c.Transport.Host) {
+		return fault.New(fault.CodeInvalidSignedConfig, "validate signed config XHTTP host", nil)
 	}
 	if !interfacePattern.MatchString(c.WireGuard.InterfaceName) || len(c.WireGuard.Addresses) == 0 || c.WireGuard.MTU < 576 || c.WireGuard.MTU > 1500 || len(c.WireGuard.Peers) == 0 {
 		return fault.New(fault.CodeInvalidSignedConfig, "validate signed config WireGuard", nil)
@@ -399,6 +411,9 @@ func Compile(config Config) (model.Config, error) {
 			ServerName:     config.Transport.Remote.ServerName,
 			Port:           config.Transport.Remote.Port,
 			AuthID:         config.Transport.AuthID,
+			Path:           config.Transport.XHTTPPath(),
+			Mode:           config.Transport.XHTTPMode(),
+			Host:           config.Transport.XHTTPHost(),
 			PacketEncoding: model.PacketEncodingXUDP,
 			LocalPort:      config.Transport.Loopback.Port,
 		},
@@ -407,6 +422,27 @@ func Compile(config Config) (model.Config, error) {
 		return model.Config{}, err
 	}
 	return compiled, nil
+}
+
+func (t Transport) XHTTPPath() string {
+	if strings.TrimSpace(t.Path) == "" {
+		return "/xconnect"
+	}
+	return t.Path
+}
+
+func (t Transport) XHTTPMode() string {
+	if strings.TrimSpace(t.Mode) == "" {
+		return "auto"
+	}
+	return t.Mode
+}
+
+func (t Transport) XHTTPHost() string {
+	if strings.TrimSpace(t.Host) == "" {
+		return t.Remote.ServerName
+	}
+	return t.Host
 }
 
 func endpointString(endpoint Endpoint) string {

@@ -141,7 +141,7 @@ Gateway 的 `up` 会同步并验证签名配置，启动外部 Xray/WireGuard，
 ```text
 One WireGuard
   → One 本机 Xray transport
-  → VLESS/TLS/XUDP
+  → VLESS/XHTTP over TLS
   → Gateway Xray
   → Gateway 本机 UDP 127.0.0.1:51820
   → Gateway WireGuard

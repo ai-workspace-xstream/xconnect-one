@@ -59,7 +59,7 @@ standalone Zero enrollment or signed-config contract.
 ```text
 macOS XConnect-One CLI
   -> One-owned external Xray UDP relay
-  -> VLESS/TLS/XUDP
+  -> VLESS/XHTTP over TLS
   -> Gateway Xray
   -> Gateway WireGuard
   -> private network
@@ -98,7 +98,7 @@ endpoint: WireGuard traffic remains carried over VLESS.
 | invite exchange | Separate platform device is created |
 | signed config | Device, network, generation and ownership validate |
 | runtime | Only the CLI-owned Xray/WireGuard profile changes |
-| VLESS transport | WireGuard reaches Gateway through VLESS/TLS/XUDP |
+| VLESS transport | WireGuard reaches Gateway through VLESS/XHTTP over TLS |
 | Zero ACK | Sent after local runtime readiness is verified |
 | private path | Gateway handshake and authorized ping/HTTP succeed |
 | teardown | `down` removes the One-owned overlay path |

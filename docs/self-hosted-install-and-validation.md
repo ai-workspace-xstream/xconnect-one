@@ -54,7 +54,7 @@ One CLI 不静态链接 Xray 或 WireGuard，但可以通过显式 bootstrap 准
 - macOS：受管 Xray，Homebrew `wireguard-tools`、`wireguard-go`；
 - Windows：受管 `xray.exe`、WireGuard for Windows，并以管理员 PowerShell 运行。
 
-Xray 必须支持 VLESS/TLS、XUDP 和 UDP `dokodemo-door`。One 生成的 WireGuard
+Xray 必须支持 VLESS/XHTTP over TLS 和 UDP `dokodemo-door`。One 生成的 WireGuard
 peer Endpoint 指向本机 Xray 的 UDP loopback 入口；不要把 Gateway 的公网
 WireGuard UDP 端口写进 One 配置。
 

@@ -1,4 +1,4 @@
-# XConnect Gateway ↔ One 数据面与 Zero 控制面：WireGuard over VLESS 设计
+# XConnect Gateway ↔ One 数据面与 Zero 控制面：WireGuard over VLESS/XHTTP 设计
 
 状态：架构基线。本文说明组件边界、网络链路和分阶段实现方式；不代表某项
 未上线能力已经通过 UAT 验证。
@@ -10,7 +10,7 @@ One、macOS One 和 Windows One 的外部运行时自动部署并验证互通：
 
 ```text
 Gateway Xray server + Gateway WireGuard peer table
-        ↕ VLESS/TLS/XUDP
+        ↕ VLESS/XHTTP over TLS
 各平台 One 外部 xray/tproxy + One WireGuard peer
 ```
 
@@ -32,7 +32,7 @@ XConnect One（Linux / Windows / macOS）
 
 目标是让网络、设备、策略、配置版本和撤销都由 Zero 管理；让 Gateway 和
 One 只执行经过签名验证的配置；让 WireGuard 负责私网身份和加密，Xray
-负责把 WireGuard UDP 承载在 VLESS/TLS 传输中。
+负责把 WireGuard UDP 承载在 VLESS/XHTTP over TLS 传输中。
 
 ## 2. 不做什么
 
@@ -52,7 +52,7 @@ One 只执行经过签名验证的配置；让 WireGuard 负责私网身份和�
 | **Vault** | 签名密钥、Gateway TLS 私钥及其他敏感材料 | GitOps 公开拓扑数据 |
 | **XConnect Gateway** | Linux relay/service；Gateway Xray、Gateway WireGuard、已批准 One peer 表、配置同步与 ACK | Portal、策略签发、One 私钥 |
 | **XConnect One** | 注册/邀请加入、配置同步和签名验证、本机 WireGuard 生命周期、ACK | Gateway、Zero 签名、APP 状态/进程 |
-| **Xray** | 外部运行时；VLESS/TLS/XUDP 传输和本地 UDP relay | 地址分配、设备审批、策略判断 |
+| **Xray** | 外部运行时；VLESS/XHTTP over TLS 传输和本地 UDP relay | 地址分配、设备审批、策略判断 |
 | **WireGuard** | 设备密钥、私网地址、peer、AllowedIPs、私网加密 | VLESS 传输、用户授权、配置签发 |
 | **XConnect APP** | 独立 APP UI、TUN、Xray/SOCKS/VLESS、插件宿主 | One 专有状态、One 的私钥和 WireGuard 接口 |
 
@@ -79,7 +79,7 @@ VLESS 身份、WireGuard 私钥与实际 peer 配置不进入 GitOps、日志、
 
 | 角色 | 第一阶段自动化内容 | 验收 |
 | --- | --- | --- |
-| Gateway（Linux） | Xray VLESS/TLS server、WireGuard、每个 One public peer、私网 HTTP marker | 443 listener、WG interface、每个 peer handshake |
+| Gateway（Linux） | Xray VLESS/XHTTP over TLS server、WireGuard、每个 One public peer、私网 HTTP marker | 443 listener、WG interface、每个 peer handshake |
 | Linux One | 外部 `xray/tproxy`、WireGuard、Gateway peer | relay/interface、handshake、ping/HTTP |
 | Windows One | 外部 `xray/tproxy`、WireGuard for Windows、Gateway peer | 同 Linux，使用受控局域网主机 |
 | macOS One | 外部 `xray/tproxy`、`wireguard-go`/WireGuard、Gateway peer | 同 Linux；需本机管理员授权或受控 macOS runner |
@@ -152,6 +152,16 @@ Gateway WireGuard
 Gateway peer 表只能来自已验证的 signed config，不能从 Portal 表单、GitOps 或
 未校验的本地文件推导。
 
+本轮唯一的 XConnect 传输 profile 是：
+
+```json
+{"kind":"vless-xhttp","port":443,"path":"/xconnect","mode":"auto"}
+```
+
+证书 SNI 和 XHTTP host 由签名配置提供。XConnect runtime 会拒绝
+`vless-tls-xudp`、其他端口以及公网 UDP `51820`；现有非 XConnect `1443`
+服务不属于本 profile。
+
 ## 7. One 共同控制面行为
 
 Linux、Windows、macOS 的 One CLI 保持相同控制面语义：
@@ -182,7 +192,7 @@ register 或 join
 One WireGuard
   ↓ 加密 UDP
 127.0.0.1:51830 的 One 外部 Xray tproxy
-  ↓ VLESS + TLS + XUDP
+  ↓ VLESS/XHTTP over TLS（TCP 443）
 Gateway Xray
   ↓ 本机 UDP 51820
 Gateway WireGuard
