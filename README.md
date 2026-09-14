@@ -12,9 +12,17 @@ interface, but it does not own One's CLI, protocol state machine, credentials,
 or private-network runtime.
 
 Independent Go CLI for a private WireGuard overlay carried over an external
-Xray VLESS/TLS connection. Module: `github.com/ai-workspace-xstream/XConnect-One`.
+Xray VLESS/XHTTP TLS connection. Module: `github.com/ai-workspace-xstream/XConnect-One`.
 This repository contains no Flutter app, FFI bridge, embedded Xray, or dependency
 on a sibling checkout. It does not change or replace `xconnect-app`.
+
+## Supported client and Gateway platforms
+
+XConnect One is the controlled-client product for Linux, macOS, Windows, iOS
+and Android. The standalone CLI is currently the supported Linux/macOS/Windows
+form; iOS and Android use a mobile client or the XConnect APP plugin surface
+with the same Zero enrollment and signed-configuration contract. XConnect
+Gateway is a separate relay/service and currently supports Linux Server only.
 
 ## Architecture and ownership
 

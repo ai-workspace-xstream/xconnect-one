@@ -4,30 +4,78 @@
 Gateway 与 One 是数据面运行时。短期邀请、设备凭据、WireGuard 私钥、TLS 私钥和
 Vault 值均不得写进 Git、终端历史或流水线参数。
 
-## 安装与启动边界
+## 一键安装入口与安全边界
 
 以下安装入口只下载、校验并安装 CLI 二进制：
 
 ```sh
-# Gateway（Linux）
+# Gateway（Linux，当前 UAT release）
 curl -fsSL https://install.svc.plus/xconnect-gateway | \
-  XCONNECT_GATEWAY_VERSION=v0.1.5 bash
+  sudo env XCONNECT_GATEWAY_VERSION=v0.1.6 bash
 
-# One（Linux 或 macOS）
+# One（Linux）
 curl -fsSL https://install.svc.plus/xconnect-one | \
-  XCONNECT_ONE_VERSION=v0.1.11 bash
+  sudo env XCONNECT_ONE_VERSION=v0.1.13 bash
+
+# One（macOS；也可使用 Homebrew）
+curl -fsSL https://install.svc.plus/xconnect-one | \
+  sudo env XCONNECT_ONE_VERSION=v0.1.13 bash
 ```
 
 Windows 使用管理员 PowerShell：
 
 ```powershell
-$env:XCONNECT_ONE_VERSION = 'v0.1.11'
+$env:XCONNECT_ONE_VERSION = 'v0.1.13'
 irm https://install.svc.plus/xconnect-one.ps1 | iex
 ```
 
-安装器不会执行 `join`、`sync`、`up` 或 `down`，也不会安装或启动
+安装器只负责安装经过校验的 CLI，不会执行 `init`、`join`、`sync`、`up` 或 `down`，也不会安装或启动
 Xray、WireGuard、`wireguard-go`。这些运行时必须由节点管理员从受信任来源
 单独安装。
+
+### Gateway 一键安装后初始化
+
+安装器完成后，在 Gateway 节点显式执行初始化。`init` 只生成本机受保护的
+WireGuard 身份和 `state.json`，不会自动加入网络：
+
+```sh
+sudo xconnect-gateway diagnose
+sudo xconnect-gateway init \
+  --state-dir /var/lib/xconnect-gateway \
+  --controller https://accounts-uat.onwalk.net \
+  --gateway-id gw-uat-1
+```
+
+随后由 Zero Portal 为该公钥签发一次性邀请，再执行 `join` 和 `up`。不要把邀请
+放入 GitHub Actions input、公开 URL、shell history 或日志。
+
+### One 一键安装后接入
+
+Linux、macOS 和 Windows 使用同一生命周期：先安装 CLI 与外部运行时，再用
+Zero 签发的一次性邀请显式 `join`。Linux/macOS 示例：
+
+```sh
+sudo xconnect diagnose --state-dir /var/lib/xconnect-one
+sudo xconnect join --bootstrap \
+  --state-dir /var/lib/xconnect-one \
+  'xconnect://join/SHORT_LIVED_INVITE'
+sudo xconnect sync --state-dir /var/lib/xconnect-one
+sudo xconnect status --state-dir /var/lib/xconnect-one
+```
+
+Windows 管理员 PowerShell：
+
+```powershell
+& "$env:ProgramFiles\XConnect\xconnect-windows-amd64.exe" diagnose `
+  --state-dir "$env:ProgramData\XConnect-One"
+& "$env:ProgramFiles\XConnect\xconnect-windows-amd64.exe" join --bootstrap `
+  --state-dir "$env:ProgramData\XConnect-One" `
+  'xconnect://join/SHORT_LIVED_INVITE'
+```
+
+`--bootstrap` 只准备节点管理员明确允许的外部 Xray/WireGuard runtime；它不会
+绕过签名验证、网络绑定、邀请有效期或 ACK。macOS standalone One 不实现
+host adapter / Packet Tunnel handoff。
 
 ## macOS One
 
@@ -141,7 +189,7 @@ Gateway 的 `up` 会同步并验证签名配置，启动外部 Xray/WireGuard，
 ```text
 One WireGuard
   → One 本机 Xray transport
-  → VLESS/XHTTP over TLS
+  → VLESS/XHTTP TLS TCP 443
   → Gateway Xray
   → Gateway 本机 UDP 127.0.0.1:51820
   → Gateway WireGuard

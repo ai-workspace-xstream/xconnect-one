@@ -5,13 +5,14 @@
 
 ## 1. 实施顺序与目标
 
-第一步不依赖 Zero。先以一次性、仅限实验室生命周期的配置，把 Gateway、Linux
-One、macOS One 和 Windows One 的外部运行时自动部署并验证互通：
+第一步不依赖 Zero。先以一次性、仅限实验室生命周期的配置，把 Linux Gateway、Linux
+One、macOS One 和 Windows One 的外部运行时自动部署并验证互通；iOS/Android
+属于移动端客户端形态，不作为 Gateway 运行节点：
 
 ```text
 Gateway Xray server + Gateway WireGuard peer table
-        ↕ VLESS/XHTTP over TLS
-各平台 One 外部 xray/tproxy + One WireGuard peer
+        ↕ VLESS/XHTTP TLS TCP 443
+各平台 One transport + One WireGuard peer
 ```
 
 该阶段的目标是固定并验证“运行时、路由、端口、精确 peer 握手和私网
@@ -27,7 +28,7 @@ XConnect Zero accounts
   ↓ signed config / enrollment / policy
 XConnect Gateway
   ↓ WireGuard over VLESS
-XConnect One（Linux / Windows / macOS）
+XConnect One（Linux / Windows / macOS / iOS / Android）
 ```
 
 目标是让网络、设备、策略、配置版本和撤销都由 Zero 管理；让 Gateway 和
@@ -39,6 +40,11 @@ One 只执行经过签名验证的配置；让 WireGuard 负责私网身份和�
 - Zero、Portal 不运行 Xray 或 WireGuard，不保存设备 WireGuard 私钥。
 - Portal 不直接 SSH、执行节点命令或持有 Gateway/One 的设备凭据。
 - One 不成为 Gateway，不签发策略或配置。
+- XConnect One 的产品形态覆盖 Linux、Windows、macOS、iOS 和 Android；其中
+  Linux/Windows/macOS 当前提供独立 controlled-client CLI，iOS/Android 通过
+  移动端客户端或 XConnect APP 插件承载相同的 Zero 入网语义。
+- XConnect Gateway 当前只支持 Linux Server；Windows、macOS、iOS 和 Android
+  不作为 Gateway 运行平台。
 - One 不读写、启动、停止或重配 XConnect APP 的 TUN、Xray、SOCKS、账号和
   状态目录。
 - GitOps 不保存邀请码、设备凭据、私钥、VLESS 身份或 TLS 私钥。
@@ -51,8 +57,8 @@ One 只执行经过签名验证的配置；让 WireGuard 负责私网身份和�
 | **Zero portal** | `/panel/xconnect-zero` 用户隔离管理界面、BFF | 私钥、设备凭据、节点远程执行 |
 | **Vault** | 签名密钥、Gateway TLS 私钥及其他敏感材料 | GitOps 公开拓扑数据 |
 | **XConnect Gateway** | Linux relay/service；Gateway Xray、Gateway WireGuard、已批准 One peer 表、配置同步与 ACK | Portal、策略签发、One 私钥 |
-| **XConnect One** | 注册/邀请加入、配置同步和签名验证、本机 WireGuard 生命周期、ACK | Gateway、Zero 签名、APP 状态/进程 |
-| **Xray** | 外部运行时；VLESS/XHTTP over TLS 传输和本地 UDP relay | 地址分配、设备审批、策略判断 |
+| **XConnect One** | 注册/邀请加入、配置同步和签名验证、本机 WireGuard 生命周期、平台传输与 ACK；覆盖桌面/服务器 CLI 及移动端客户端形态 | Gateway、Zero 签名、APP 状态/进程 |
+| **Xray** | 外部运行时；VLESS/XHTTP TLS 传输和本地 UDP relay | 地址分配、设备审批、策略判断 |
 | **WireGuard** | 设备密钥、私网地址、peer、AllowedIPs、私网加密 | VLESS 传输、用户授权、配置签发 |
 | **XConnect APP** | 独立 APP UI、TUN、Xray/SOCKS/VLESS、插件宿主 | One 专有状态、One 的私钥和 WireGuard 接口 |
 
@@ -164,7 +170,8 @@ Gateway peer 表只能来自已验证的 signed config，不能从 Portal 表单
 
 ## 7. One 共同控制面行为
 
-Linux、Windows、macOS 的 One CLI 保持相同控制面语义：
+Linux、Windows、macOS 的 One CLI 保持相同控制面语义；iOS/Android 移动端客户端
+或插件保持相同的 enrollment、signed config 和 ACK 语义：
 
 ```text
 register 或 join
