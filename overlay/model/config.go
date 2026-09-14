@@ -18,12 +18,15 @@ import (
 var interfaceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_=+.-]{1,15}$`)
 
 const (
-	SchemaVersionV1      = 1
-	CoreIDXray           = "xray"
-	AdapterIDLibXray     = "libXray"
-	AdapterIDXrayCore    = "xray-core"
-	WireRuntimeXrayCore  = "xray-core"
-	TransportVLESSTLS    = "vless-tls"
+	SchemaVersionV1     = 1
+	CoreIDXray          = "xray"
+	AdapterIDLibXray    = "libXray"
+	AdapterIDXrayCore   = "xray-core"
+	WireRuntimeXrayCore = "xray-core"
+	TransportVLESSXHTTP = "vless-xhttp"
+	// TransportVLESSTLS is retained as a source-compatible name. XConnect
+	// profiles now always use VLESS over XHTTP on the Gateway's TCP 443 port.
+	TransportVLESSTLS    = TransportVLESSXHTTP
 	TransportSecurityTLS = "tls"
 	PacketEncodingXUDP   = "xudp"
 )
@@ -39,6 +42,10 @@ type Network struct {
 	TransportServerName string    `json:"transport_server_name"`
 	TransportPort       int       `json:"transport_port"`
 	TransportAuthID     string    `json:"transport_auth_id"`
+	TransportKind       string    `json:"transport_kind,omitempty"`
+	TransportPath       string    `json:"transport_path,omitempty"`
+	TransportMode       string    `json:"transport_mode,omitempty"`
+	TransportHost       string    `json:"transport_host,omitempty"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -85,6 +92,7 @@ type TransportConfig struct {
 	AuthID         string `json:"auth_id,omitempty"`
 	Path           string `json:"path"`
 	Mode           string `json:"mode"`
+	Host           string `json:"host"`
 	Flow           string `json:"flow"`
 	PacketEncoding string `json:"packet_encoding"`
 	LocalPort      int    `json:"local_port"`
@@ -132,8 +140,20 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Network.ID) == "" || strings.TrimSpace(c.Device.ID) == "" {
 		return fault.New(fault.CodeInvalidConfig, "validate config", nil)
 	}
+	if c.Transport.LocalPort != 51830 || c.Transport.Port != 443 {
+		return fault.New(fault.CodeInvalidConfig, "validate config XHTTP ports", nil)
+	}
 	if c.Transport.Type != TransportVLESSTLS || c.Transport.Security != TransportSecurityTLS || c.Transport.PacketEncoding != PacketEncodingXUDP {
 		return fault.New(fault.CodeInvalidConfig, "validate config", nil)
+	}
+	if c.Transport.Path != "" && (!strings.HasPrefix(c.Transport.Path, "/") || len(c.Transport.Path) > 1024) {
+		return fault.New(fault.CodeInvalidConfig, "validate config XHTTP path", nil)
+	}
+	if c.Transport.Mode != "" && c.Transport.Mode != "auto" && c.Transport.Mode != "packet-up" && c.Transport.Mode != "stream-up" {
+		return fault.New(fault.CodeInvalidConfig, "validate config XHTTP mode", nil)
+	}
+	if c.Transport.Host != "" && strings.TrimSpace(c.Transport.Host) == "" {
+		return fault.New(fault.CodeInvalidConfig, "validate config XHTTP host", nil)
 	}
 	if strings.TrimSpace(c.Transport.Server) == "" || !validPort(c.Transport.Port) || !validPort(c.Transport.LocalPort) || !validVLESSAuthID(c.Transport.VLESSAuthID()) {
 		return fault.New(fault.CodeInvalidConfig, "validate config", nil)
@@ -183,6 +203,27 @@ func (t TransportConfig) TLSServerName() string {
 		return t.ServerName
 	}
 	return t.Server
+}
+
+func (t TransportConfig) XHTTPPath() string {
+	if strings.TrimSpace(t.Path) == "" {
+		return "/xconnect"
+	}
+	return t.Path
+}
+
+func (t TransportConfig) XHTTPMode() string {
+	if strings.TrimSpace(t.Mode) == "" {
+		return "auto"
+	}
+	return t.Mode
+}
+
+func (t TransportConfig) XHTTPHost() string {
+	if strings.TrimSpace(t.Host) == "" {
+		return t.TLSServerName()
+	}
+	return t.Host
 }
 
 func (w WireGuardConfig) RelayTargetPort() int {
