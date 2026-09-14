@@ -91,7 +91,7 @@ brew install xray wireguard-tools wireguard-go
 安装后先确认外部运行时可见：
 
 ```sh
-XCONNECT_BIN="$(brew --prefix)/bin/xconnect"
+XCONNECT_BIN="${XCONNECT_BIN:-$(brew --prefix)/bin/xconnect}"
 sudo "$XCONNECT_BIN" diagnose --state-dir /var/lib/xconnect-one
 ```
 

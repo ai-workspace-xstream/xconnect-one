@@ -9,7 +9,6 @@ umask 022
 readonly RELEASE_REPOSITORY="ai-workspace-xstream/XConnect-One"
 readonly DEFAULT_VERSION="v0.1.11"
 version="${XCONNECT_ONE_VERSION:-$DEFAULT_VERSION}"
-install_dir="${XCONNECT_ONE_INSTALL_DIR:-/usr/local/bin}"
 release_base="${XCONNECT_ONE_RELEASE_BASE_URL:-https://github.com/${RELEASE_REPOSITORY}/releases/download}"
 
 die() {
@@ -23,6 +22,11 @@ command -v curl >/dev/null || die 'curl is required'
 
 os="$(uname -s)"
 arch="$(uname -m)"
+default_install_dir='/usr/local/bin'
+if [[ "$os:$arch" == Darwin:arm64 ]]; then
+  default_install_dir='/opt/homebrew/bin'
+fi
+install_dir="${XCONNECT_ONE_INSTALL_DIR:-$default_install_dir}"
 case "$os:$arch" in
   Linux:x86_64) asset='xconnect-linux-amd64' ;;
   Linux:aarch64|Linux:arm64) asset='xconnect-linux-arm64' ;;

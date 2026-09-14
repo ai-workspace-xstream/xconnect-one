@@ -109,12 +109,13 @@ the external `wg`, `wg-quick`, and `wireguard-go` tools. On macOS the supported
 Homebrew toolchain is installed as the Homebrew owner rather than root.
 Build the binary for
 the host architecture, then install the checked release binary on the command
-path before enrollment:
+path before enrollment. On Apple Silicon macOS, use `/opt/homebrew/bin`; use
+`/usr/local/bin` on Linux and Intel macOS:
 
 ```sh
-sudo install -d -m 0755 /usr/local/bin
-sudo install -m 0755 dist/xconnect-macos-arm64 /usr/local/bin/xconnect
-sudo /usr/local/bin/xconnect diagnose --state-dir /var/lib/xconnect-one
+sudo install -d -m 0755 /opt/homebrew/bin
+sudo install -m 0755 dist/xconnect-macos-arm64 /opt/homebrew/bin/xconnect
+sudo /opt/homebrew/bin/xconnect diagnose --state-dir /var/lib/xconnect-one
 ```
 
 The command uses its inherited executable path to locate external runtimes.
