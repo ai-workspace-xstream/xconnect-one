@@ -18,8 +18,9 @@ curl -fsSL https://install.svc.plus/xconnect-one | \
 `curl` 进程前面。安装脚本只下载对应平台的公开 Release 制品并校验
 `SHA256SUMS`，不会创建 Zero 设备或自动加入网络。
 
-Linux 支持 `amd64` / `arm64`，macOS 支持 Intel / Apple Silicon。默认安装到
-`/usr/local/bin/xconnect`；可用 `XCONNECT_ONE_INSTALL_DIR` 指定绝对路径。私有
+Linux 支持 `amd64` / `arm64`，macOS 支持 Intel / Apple Silicon。Linux 与 Intel
+macOS 默认安装到 `/usr/local/bin/xconnect`，Apple Silicon macOS 默认安装到
+`/opt/homebrew/bin/xconnect`；可用 `XCONNECT_ONE_INSTALL_DIR` 指定绝对路径。私有
 GitHub Release 通过受控镜像提供时，安装脚本使用
 `XCONNECT_ONE_RELEASE_BASE_URL` 覆盖下载根地址。
 
