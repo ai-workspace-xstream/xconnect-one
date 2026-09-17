@@ -4,6 +4,142 @@
 Gateway 与 One 是数据面运行时。短期邀请、设备凭据、WireGuard 私钥、TLS 私钥和
 Vault 值均不得写进 Git、终端历史或流水线参数。
 
+## 最短接入流程
+
+用户只需要准备一个 Gateway，然后在 Zero Portal 生成一次性邀请，最后在受控
+设备上执行 One shell。Gateway 只支持 Linux Server；One 支持 Linux、macOS 和
+Windows。
+
+### 第 1 步：准备 Gateway 域名解析
+
+准备一个指向 Gateway 公网 IP 的 DNS-only A 记录，例如：
+
+```text
+tw-xconnect.svc.plus → Gateway 公网 IPv4
+```
+
+确认解析生效：
+
+```bash
+ping -c 1 tw-xconnect.svc.plus
+```
+
+Gateway 公网只需要开放 TCP `443`。WireGuard `51820/UDP` 只在 Gateway 本机
+回环/内部转发使用，不加入公网安全组。
+
+### 第 2 步：Gateway 执行一键初始化
+
+SSH 登录 Linux Gateway，安装 Gateway CLI：
+
+```bash
+curl -fsSL https://install.svc.plus/xconnect-gateway | \
+  sudo env XCONNECT_GATEWAY_VERSION=v0.1.6 bash
+```
+
+执行 `one shell` 初始化 Gateway 身份；只需要修改 Gateway ID 和域名：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/ai-workspace-xstream/XConnect-One/main/scripts/one.sh \
+  -o /tmp/xconnect-one.sh
+chmod 0755 /tmp/xconnect-one.sh
+
+sudo /tmp/xconnect-one.sh gateway-init \
+  --controller https://accounts-uat.onwalk.net \
+  --gateway-id gw-uat-tw-xconnect \
+  --state-dir /var/lib/xconnect-gateway
+```
+
+`gateway-init` 只生成 Gateway 本机身份和受保护的 `state.json`，不会打印或
+上传私钥，也不会替代后续 Zero Gateway 邀请、`join` 和 `up`。
+
+### 第 3 步：Zero Portal 签发 One 邀请
+
+打开当前 UAT 控制面：
+
+[XConnect Zero Portal](https://console-serverless-uat.onwalk.net/panel/xconnect-zero)
+
+选择：
+
+1. 角色：`One`
+2. 网络：目标 UAT/PROD 网络
+3. 设备平台：`Linux`、`macOS` 或 `Windows`
+4. 设备 ID：使用默认主机名或自定义稳定 ID
+5. 有效期：建议 `15` 分钟
+
+点击“签发设备邀请”，然后使用页面提供的 **Copy/Run** 命令。邀请是一次性
+敏感信息，不要粘贴到 Git、工单、聊天记录或公共日志。
+
+### 第 4 步：One 一键加入 Gateway
+
+在 macOS/Linux 上，One shell 会自动识别主机名，并完成：
+
+```text
+join → signed config → sync → Xray/WireGuard → ACK → status/diagnose
+```
+
+macOS 从剪贴板接入：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/ai-workspace-xstream/XConnect-One/main/scripts/one.sh \
+  -o /tmp/xconnect-one.sh
+chmod 0755 /tmp/xconnect-one.sh
+
+pbpaste | bash /tmp/xconnect-one.sh join \
+  --gateway-id gw-uat-tw-xconnect \
+  --handoff /path/to/xconnect-desktop-handoff-uat.json \
+  --state-dir /var/lib/xconnect-one \
+  --invite-stdin
+```
+
+Linux 使用同一个脚本；把 `pbpaste` 换成系统剪贴板命令，或把 Portal 的 Copy/Run
+输出安全地通过 stdin 传入：
+
+```bash
+cat /path/to/one-invite.txt | bash /tmp/xconnect-one.sh join \
+  --gateway-id gw-uat-tw-xconnect \
+  --handoff /path/to/xconnect-desktop-handoff-uat.json \
+  --state-dir /var/lib/xconnect-one \
+  --invite-stdin
+```
+
+Windows 在管理员 PowerShell 中执行：
+
+```powershell
+irm https://raw.githubusercontent.com/ai-workspace-xstream/XConnect-One/main/scripts/one.ps1 `
+  -OutFile "$env:TEMP\xconnect-one.ps1"
+
+Get-Clipboard | & "$env:TEMP\xconnect-one.ps1" join `
+  -GatewayId gw-uat-tw-xconnect `
+  -Handoff "$env:TEMP\xconnect-desktop-handoff-uat.json" `
+  -InviteStdin
+```
+
+成功时终端会显示：
+
+```text
+PASS: XConnect One enrolled and local runtime applied.
+```
+
+### 第 5 步：验证状态
+
+```bash
+bash /tmp/xconnect-one.sh verify \
+  --handoff /path/to/xconnect-desktop-handoff-uat.json
+```
+
+验证通过需要看到：
+
+```text
+joined=true
+handshake=OK
+PASS: XConnect One verification completed.
+```
+
+如果当前 handoff 没有 run-scoped 私网 HTTP 探针，脚本不会伪造 ping/HTTP 成功；
+私网 ping/HTTP 应使用对应 UAT Cloud Lab 的验收结果。
+
 ## 一键安装入口与安全边界
 
 以下安装入口只下载、校验并安装 CLI 二进制：
@@ -132,6 +268,30 @@ sudo "$XCONNECT_BIN" down --state-dir /var/lib/xconnect-one
 配置并启动。
 
 ### Linux / macOS / Windows 快速接入
+
+统一 shell 入口：
+
+```sh
+# Gateway：只初始化本机身份和 state.json
+scripts/one.sh gateway-init \
+  --controller https://accounts-uat.onwalk.net \
+  --gateway-id gw-uat-tw-xconnect \
+  --state-dir /var/lib/xconnect-gateway
+
+# One：自动主机名 + 一次性邀请 stdin，自动 join/sync/status/diagnose
+pbpaste | scripts/one.sh join \
+  --gateway-id gw-uat-tw-xconnect \
+  --handoff /path/to/xconnect-desktop-handoff-uat.json \
+  --state-dir /var/lib/xconnect-one \
+  --invite-stdin
+```
+
+Windows 使用 `scripts/one.ps1` 和管理员 PowerShell；它保持相同的 One
+生命周期，但不提供 Gateway 初始化，因为 Gateway 当前只支持 Linux Server。
+
+`gateway-init` 与 `join` 只是薄封装：Gateway/One 的签名配置、运行时启动、
+WireGuard/Xray 和 ACK 仍由对应原生 CLI 完成。不要把 Vault token、私钥或邀请
+URI 固化到 shell 文件。
 
 One 可以显式完成受管运行时准备并加入 Gateway，无需手工编写
 Xray/WireGuard 配置：
