@@ -14,6 +14,52 @@
 
 ## 快速使用
 
+### XConnect One shell 入口
+
+`one.sh` 是对已安装 CLI 的最小封装。它不读取 Vault、不保存 Portal 会话，
+也不生成长期凭据；Gateway 与 One 仍使用各自的 CLI 和 state 目录。
+
+Gateway 只初始化本机身份和 `state.json`：
+
+```bash
+scripts/one.sh gateway-init \
+  --controller https://accounts-uat.onwalk.net \
+  --gateway-id gw-uat-tw-xconnect \
+  --state-dir /var/lib/xconnect-gateway
+```
+
+macOS/Linux One 使用 Zero 签发的一次性邀请：
+
+```bash
+pbpaste | scripts/one.sh join \
+  --gateway-id gw-uat-tw-xconnect \
+  --handoff /path/to/xconnect-desktop-handoff-uat.json \
+  --state-dir /var/lib/xconnect-one \
+  --invite-stdin
+```
+
+Windows 使用管理员 PowerShell，邀请同样只从 stdin 读取：
+
+```powershell
+Get-Clipboard | .\scripts\one.ps1 join `
+  -GatewayId gw-uat-tw-xconnect `
+  -Handoff .\xconnect-desktop-handoff-uat.json `
+  -InviteStdin
+```
+
+`join` 自动识别主机名，并依次执行 `join → sync → status → diagnose`。邀请
+不写入文件或命令行参数；sudo/UAC 仍由本机管理员确认。Gateway 的 `join/up`、
+One 的签名验证、runtime 启动和 ACK 仍由原生 CLI 负责。
+
+面向终端用户的推荐顺序是：
+
+```text
+域名解析 → Gateway gateway-init → Zero Portal 签发短期邀请 → One join
+```
+
+不要使用 `curl ... | bash` 同时承载脚本和邀请 stdin；脚本内容与邀请会争用
+同一个输入流。推荐先把脚本下载到 `/tmp`，再使用 `pbpaste | bash /tmp/one.sh`。
+
 ### 1. macOS / Linux
 
 #### 诊断自查 (无需 root 权限)

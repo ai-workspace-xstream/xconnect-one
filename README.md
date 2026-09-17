@@ -16,6 +16,60 @@ Xray VLESS/XHTTP TLS connection. Module: `github.com/ai-workspace-xstream/XConne
 This repository contains no Flutter app, FFI bridge, embedded Xray, or dependency
 on a sibling checkout. It does not change or replace `xconnect-app`.
 
+## Quick start: one shell
+
+The user-facing path is intentionally short: choose a Gateway, paste a
+short-lived Zero invitation through stdin, and let the wrapper run the normal
+CLI lifecycle. The wrapper never reads Vault or stores the invitation.
+
+### macOS / Linux One
+
+Install the released CLI and external runtimes first. Then download the small
+wrapper and use the Copy/Run invitation from Zero Portal:
+
+```sh
+curl -fsSL https://install.svc.plus/xconnect-one | \
+  sudo env XCONNECT_ONE_VERSION=v0.1.13 bash
+curl -fsSL \
+  https://raw.githubusercontent.com/ai-workspace-xstream/XConnect-One/main/scripts/one.sh \
+  -o /tmp/xconnect-one.sh
+chmod 0755 /tmp/xconnect-one.sh
+
+pbpaste | bash /tmp/xconnect-one.sh join \
+  --gateway-id gw-uat-tw-xconnect \
+  --handoff /path/to/xconnect-desktop-handoff-uat.json \
+  --state-dir /var/lib/xconnect-one \
+  --invite-stdin
+```
+
+The wrapper derives the host name and runs `join → sync → status → diagnose`.
+The underlying CLI still verifies the signed config, starts external
+Xray/WireGuard and sends the ACK.
+
+### Windows One
+
+Run an elevated PowerShell and use the platform wrapper:
+
+```powershell
+irm https://raw.githubusercontent.com/ai-workspace-xstream/XConnect-One/main/scripts/one.ps1 `
+  -OutFile "$env:TEMP\xconnect-one.ps1"
+Get-Clipboard | & "$env:TEMP\xconnect-one.ps1" join `
+  -GatewayId gw-uat-tw-xconnect `
+  -Handoff "$env:TEMP\xconnect-desktop-handoff-uat.json" `
+  -InviteStdin
+```
+
+### Local verification
+
+```sh
+bash /tmp/xconnect-one.sh verify \
+  --handoff /path/to/xconnect-desktop-handoff-uat.json
+```
+
+The handoff selects the network and transport contract; `--gateway-id` is
+required to prevent joining the wrong Gateway. The invitation must not be put
+in shell history, Git, tickets or logs.
+
 ## Supported client and Gateway platforms
 
 XConnect One is the controlled-client product for Linux, macOS, Windows, iOS
@@ -27,9 +81,10 @@ Gateway is a separate relay/service and currently supports Linux Server only.
 ## Architecture and ownership
 
 XConnect Zero's API and persistence belong to **Accounts**, outside this
-repository. The proposed WebUI portal is **`/panel/xconnect-zero`**; it is an
-architecture proposal, not a portal implemented or deployed here. XConnect-One
-is the independent Linux CLI consumer of those APIs. Any integration with
+repository. The deployed WebUI portal is **`/panel/xconnect-zero`** and remains
+the user-facing place to select a network, Gateway and One platform and issue
+short-lived invitations. XConnect-One is the independent Linux/macOS/Windows
+CLI consumer of those APIs. Any integration with
 `xconnect-app` is through plugin composition only, not a source merge or shared
 mutable state. This extraction does not implement that plugin integration.
 
