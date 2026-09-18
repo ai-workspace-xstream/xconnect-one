@@ -1,0 +1,11 @@
+XConnect-One
+
+Contains code extracted from ai-workspace-xstream/xconnect-app,
+commit 18d328e5c7b171a4c53f6e2a1d387155901c9715.
+Upstream license attribution: Copyright 2025 svc.plus.
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+Modified files carry standalone Go module imports. Cached startup is disabled,
+unhealthy runtime cleanup is delegated to ownership checks, and WireGuard
+interface collision and identity safeguards were added. Repository packaging,
+documentation, regression tests and CI were added. See PROVENANCE.md.
