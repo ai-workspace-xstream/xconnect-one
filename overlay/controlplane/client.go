@@ -104,7 +104,7 @@ func (c *Client) GetConfig(ctx context.Context, request ConfigRequest) (model.Co
 
 func (c *Client) AckConfig(ctx context.Context, request ConfigAckRequest) (ConfigAckResponse, error) {
 	var response ConfigAckResponse
-	err := c.doJSON(ctx, http.MethodPost, apiPrefixV1+"/config/ack", nil, request, &response, nil)
+	err := c.doJSON(ctx, RouteLegacyConfigAck.Method, RouteLegacyConfigAck.Path, nil, request, &response, nil)
 	return response, err
 }
 
