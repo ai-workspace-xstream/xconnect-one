@@ -45,22 +45,6 @@ type ConfigRequest struct {
 	NodeID    string
 }
 
-type ConfigAckRequest struct {
-	DeviceID  string    `json:"device_id"`
-	NetworkID string    `json:"network_id,omitempty"`
-	Revision  string    `json:"revision"`
-	Digest    string    `json:"digest,omitempty"`
-	AppliedAt time.Time `json:"applied_at"`
-}
-
-type ConfigAckResponse struct {
-	Acked      bool      `json:"acked"`
-	DeviceID   string    `json:"device_id"`
-	NetworkID  string    `json:"network_id"`
-	Revision   string    `json:"revision"`
-	ReceivedAt time.Time `json:"received_at"`
-}
-
 func New(baseURL, token string, httpClient *http.Client) (*Client, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -100,12 +84,6 @@ func (c *Client) GetConfig(ctx context.Context, request ConfigRequest) (model.Co
 	}
 	config.ETag = responseHeader.Get("ETag")
 	return config, nil
-}
-
-func (c *Client) AckConfig(ctx context.Context, request ConfigAckRequest) (ConfigAckResponse, error) {
-	var response ConfigAckResponse
-	err := c.doJSON(ctx, http.MethodPost, apiPrefixV1+"/config/ack", nil, request, &response, nil)
-	return response, err
 }
 
 func (c *Client) doJSON(
