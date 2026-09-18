@@ -49,11 +49,6 @@ var (
 		Method: "GET",
 		Path:   "/api/overlay/v1/enrollment/policy-artifacts/:generation/:digest",
 	}
-	// RouteLegacyConfigAck is the legacy unsigned config ack route that does not exist in accounts v1.
-	RouteLegacyConfigAck = RouteTemplate{
-		Method: "POST",
-		Path:   "/api/overlay/v1/config/ack",
-	}
 )
 
 // ClientOverlayRoutes returns all route templates used by the client when communicating with accounts overlay control plane.
@@ -68,7 +63,6 @@ var ClientOverlayRoutes = []RouteTemplate{
 	RouteRegistrations,
 	RouteRegistrationsExchange,
 	RoutePolicyArtifact,
-	RouteLegacyConfigAck,
 }
 
 // BuildSignedConfigAckPath formats an ack route with the given generation.

@@ -4,6 +4,7 @@ package usecase_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
 	overlayruntime "github.com/ai-workspace-xstream/XConnect-One/overlay/runtime"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/signedconfig"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/state"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/usecase"
 )
@@ -36,6 +38,9 @@ type controlPlaneFixture struct {
 	configFailure int
 	ackFailure    int
 	config        model.Config
+	signedConfig  signedconfig.Config
+	signingKeys   signedconfig.SigningKeys
+	privateKey    ed25519.PrivateKey
 }
 
 type externalXrayRuntime struct {
@@ -54,10 +59,44 @@ func (r *externalXrayRuntime) Apply(ctx context.Context, request overlayruntime.
 
 func newControlPlaneFixture(t *testing.T) *controlPlaneFixture {
 	t.Helper()
-	fixture := &controlPlaneFixture{t: t, config: validConfig()}
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize))
+	notAfter := signedconfig.CanonicalTime{Time: now.Add(24 * time.Hour)}
+	keys := signedconfig.SigningKeys{Keys: []signedconfig.SigningKey{{
+		KeyID: "signing_key_01", Algorithm: signedconfig.SignatureEd25519,
+		PublicKey: base64.StdEncoding.EncodeToString(privateKey.Public().(ed25519.PublicKey)), Status: "current",
+		NotBefore: signedconfig.CanonicalTime{Time: now.Add(-time.Hour)}, NotAfter: &notAfter,
+	}}}
+	sc := signedconfig.Config{
+		SchemaVersion: 1, ConfigID: "revision-7", NetworkID: "net_private", DeviceID: "dev_laptop", Generation: 1,
+		IssuedAt: signedconfig.CanonicalTime{Time: now.Add(-time.Minute)}, ExpiresAt: signedconfig.CanonicalTime{Time: now.Add(time.Hour)},
+		ProxyCore: signedconfig.ProxyCoreXray,
+		Transport: signedconfig.Transport{Kind: signedconfig.TransportVLESS, Loopback: signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830}, Remote: signedconfig.RemoteEndpoint{Host: "gateway.example.net", Port: 443, ServerName: "gateway.example.net"}, AuthID: "11111111-1111-1111-1111-111111111111"},
+		WireGuard: signedconfig.WireGuard{InterfaceName: "wg-xco", Addresses: []string{"10.77.0.10/32"}, MTU: 1280, Peers: []signedconfig.Peer{{GatewayID: "gw_tokyo_01", PublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", AllowedIPs: []string{"10.77.0.0/16"}, Endpoint: signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830}, PersistentKeepaliveSeconds: 25}}},
+		Signature: signedconfig.Signature{Algorithm: signedconfig.SignatureEd25519, KeyID: "signing_key_01"},
+	}
+	payload, err := sc.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.Signature.Value = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	compiled, err := signedconfig.Compile(sc)
+	if err != nil {
+		t.Fatalf("compile signed config for test fixture: %v", err)
+	}
+	fixture := &controlPlaneFixture{t: t, config: compiled, signedConfig: sc, signingKeys: keys, privateKey: privateKey}
 	fixture.server = httptest.NewServer(http.HandlerFunc(fixture.handle))
 	t.Cleanup(fixture.server.Close)
 	return fixture
+}
+
+func (f *controlPlaneFixture) reSign(t *testing.T) {
+	t.Helper()
+	payload, err := f.signedConfig.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.signedConfig.Signature.Value = base64.StdEncoding.EncodeToString(ed25519.Sign(f.privateKey, payload))
 }
 
 func (f *controlPlaneFixture) handle(writer http.ResponseWriter, request *http.Request) {
@@ -87,7 +126,12 @@ func (f *controlPlaneFixture) handle(writer http.ResponseWriter, request *http.R
 			},
 			Network: model.Network{ID: "net_private", DisplayName: "Private", CIDR: "10.77.0.0/16"},
 		})
-	case "/api/overlay/v1/config":
+	case "/api/overlay/v1/signing-keys":
+		writer.Header().Set("Cache-Control", "private, max-age=300")
+		writer.Header().Set("Vary", "Authorization")
+		writer.Header().Set("ETag", `"keys-1"`)
+		_ = json.NewEncoder(writer).Encode(f.signingKeys)
+	case "/api/overlay/v1/signed-config":
 		f.configCalls++
 		if got := request.URL.Query().Get("device_id"); got != "dev_laptop" {
 			f.t.Errorf("device_id query = %q", got)
@@ -97,26 +141,35 @@ func (f *controlPlaneFixture) handle(writer http.ResponseWriter, request *http.R
 			writer.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		writer.Header().Set("Cache-Control", "private, no-store")
 		writer.Header().Set("ETag", `"revision-7"`)
-		_ = json.NewEncoder(writer).Encode(f.config)
-	case "/api/overlay/v1/config/ack":
+		_ = json.NewEncoder(writer).Encode(f.signedConfig)
+	case "/api/overlay/v1/signed-config/1/ack":
 		f.ackCalls++
 		if f.ackFailure > 0 {
 			f.ackFailure--
 			writer.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		var payload controlplane.ConfigAckRequest
+		var payload struct {
+			ConfigID  string `json:"config_id"`
+			DeviceID  string `json:"device_id"`
+			AppliedAt string `json:"applied_at"`
+		}
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			f.t.Errorf("decode ack request: %v", err)
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(writer).Encode(controlplane.ConfigAckResponse{
-			Acked:     true,
-			DeviceID:  payload.DeviceID,
-			NetworkID: payload.NetworkID,
-			Revision:  payload.Revision,
+		_ = json.NewEncoder(writer).Encode(controlplane.SignedConfigAckResponse{
+			Acked: true,
+			Ack: controlplane.SignedConfigAck{
+				DeviceID:   payload.DeviceID,
+				ConfigID:   payload.ConfigID,
+				Generation: 1,
+				AppliedAt:  time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC),
+				ReceivedAt: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC),
+			},
 		})
 	default:
 		f.t.Errorf("unexpected API path %s", request.URL.Path)
@@ -355,28 +408,30 @@ func TestJoinMapsExpiredTokenWithoutLeakingIt(t *testing.T) {
 func TestJoinRejectsInvalidConfigBeforeRuntimeAndAck(t *testing.T) {
 	tests := []struct {
 		name     string
-		mutate   func(*model.Config)
+		mutate   func(*controlPlaneFixture, *testing.T)
 		wantCode string
 	}{
 		{
 			name: "unsupported core",
-			mutate: func(config *model.Config) {
-				config.Transport.Runtime = "sing-box"
+			mutate: func(f *controlPlaneFixture, t *testing.T) {
+				f.signedConfig.ProxyCore = "sing-box"
+				f.reSign(t)
 			},
 			wantCode: fault.CodeUnsupportedRuntimeCore,
 		},
 		{
 			name: "invalid transport",
-			mutate: func(config *model.Config) {
-				config.Transport.Type = "other"
+			mutate: func(f *controlPlaneFixture, t *testing.T) {
+				f.signedConfig.Transport.Kind = "other"
+				f.reSign(t)
 			},
-			wantCode: fault.CodeInvalidConfig,
+			wantCode: fault.CodeInvalidSignedConfig,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newControlPlaneFixture(t)
-			test.mutate(&fixture.config)
+			test.mutate(fixture, t)
 			runtime := &overlayruntime.Fake{}
 			joiner, _ := newJoiner(t, fixture, runtime)
 

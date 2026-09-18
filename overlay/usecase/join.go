@@ -23,7 +23,6 @@ import (
 type ControlPlane interface {
 	RegisterDevice(context.Context, controlplane.RegisterDeviceRequest) (controlplane.RegisterDeviceResponse, error)
 	GetConfig(context.Context, controlplane.ConfigRequest) (model.Config, error)
-	AckConfig(context.Context, controlplane.ConfigAckRequest) (controlplane.ConfigAckResponse, error)
 }
 
 type SignedControlPlane interface {
@@ -99,7 +98,7 @@ func NewJoiner(controlPlane ControlPlane, store *state.Store, tunnelRuntime runt
 		now:           time.Now,
 		generateKey:   generateWireGuardKeyPair,
 		generateNonce: generateUUIDv4,
-		contract:      ConfigContractLegacy,
+		contract:      ConfigContractAuto,
 	}
 }
 
@@ -310,16 +309,7 @@ func (j *Joiner) Join(ctx context.Context, request JoinRequest) (JoinResult, err
 				return JoinResult{}, fault.New(fault.CodeInvalidResponse, "acknowledge signed config", nil)
 			}
 		} else {
-			ack, err := j.controlPlane.AckConfig(ctx, controlplane.ConfigAckRequest{
-				DeviceID: checkpoint.DeviceID, NetworkID: checkpoint.NetworkID,
-				Revision: checkpoint.Config.Revision, Digest: checkpoint.Config.Digest, AppliedAt: j.now().UTC(),
-			})
-			if err != nil {
-				return JoinResult{}, err
-			}
-			if !ack.Acked || ack.DeviceID != checkpoint.DeviceID || ack.NetworkID != checkpoint.NetworkID || ack.Revision != checkpoint.Config.Revision {
-				return JoinResult{}, fault.New(fault.CodeInvalidResponse, "acknowledge legacy config", nil)
-			}
+			return JoinResult{}, fault.New(fault.CodeSignedConfigUnavailable, "control plane does not support signed config", nil)
 		}
 		checkpoint.Phase = state.PhaseAcknowledged
 		checkpoint.UpdatedAt = j.now().UTC()
@@ -392,9 +382,9 @@ func (j *Joiner) fetchRuntimeConfig(ctx context.Context, checkpoint *state.Check
 			return fetchedRuntimeConfig{}, signedErr
 		}
 		if locked {
-			return fetchedRuntimeConfig{}, fault.New(fault.CodeConfigDowngradeBlocked, "signed config capability unavailable after lock", nil)
+			return fetchedRuntimeConfig{}, fault.New(fault.CodeConfigDowngradeBlocked, "fetch legacy config after signed lock", signedErr)
 		}
-		return j.fetchLegacyConfig(ctx, *checkpoint)
+		return fetchedRuntimeConfig{}, fault.New(fault.CodeSignedConfigUnavailable, "control plane does not support signed config", signedErr)
 	default:
 		return fetchedRuntimeConfig{}, fault.New(fault.CodeInvalidInput, "select config contract", nil)
 	}

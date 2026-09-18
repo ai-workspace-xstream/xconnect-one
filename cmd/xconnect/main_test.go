@@ -569,6 +569,8 @@ func TestPolicyExplainOutputsOnlyScopedRuleAndResolvedDevices(t *testing.T) {
 
 func newCLITestServer(t *testing.T, unauthorized bool, ackCalls *atomic.Int32) *httptest.Server {
 	t.Helper()
+	config, keys := cliTestSignedContract(t)
+	now := time.Now().UTC().Truncate(time.Second)
 	return httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		if unauthorized || request.Header.Get("Authorization") != "Bearer "+cliTestToken {
@@ -577,8 +579,37 @@ func newCLITestServer(t *testing.T, unauthorized bool, ackCalls *atomic.Int32) *
 			return
 		}
 		switch request.URL.Path {
-		case "/api/overlay/v1/signing-keys", "/api/overlay/v1/signed-config":
-			writer.WriteHeader(http.StatusNotFound)
+		case "/api/overlay/v1/signing-keys":
+			writer.Header().Set("Cache-Control", "private, max-age=300")
+			writer.Header().Set("Vary", "Authorization")
+			writer.Header().Set("ETag", `"keys-1"`)
+			_ = json.NewEncoder(writer).Encode(keys)
+		case "/api/overlay/v1/signed-config":
+			writer.Header().Set("Cache-Control", "private, no-store")
+			writer.Header().Set("ETag", `"cfg_cli"`)
+			_ = json.NewEncoder(writer).Encode(config)
+		case "/api/overlay/v1/signed-config/1/ack":
+			ackCalls.Add(1)
+			var payload struct {
+				ConfigID  string `json:"config_id"`
+				DeviceID  string `json:"device_id"`
+				AppliedAt string `json:"applied_at"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("decode ack request: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(controlplane.SignedConfigAckResponse{
+				Acked: true,
+				Ack: controlplane.SignedConfigAck{
+					DeviceID:   payload.DeviceID,
+					ConfigID:   payload.ConfigID,
+					Generation: 1,
+					AppliedAt:  now,
+					ReceivedAt: now.Add(time.Millisecond),
+				},
+			})
 		case "/api/overlay/v1/devices/register":
 			var payload controlplane.RegisterDeviceRequest
 			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
@@ -597,25 +628,37 @@ func newCLITestServer(t *testing.T, unauthorized bool, ackCalls *atomic.Int32) *
 			})
 		case "/api/overlay/v1/config":
 			_ = json.NewEncoder(writer).Encode(cliTestConfig())
-		case "/api/overlay/v1/config/ack":
-			ackCalls.Add(1)
-			var payload controlplane.ConfigAckRequest
-			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-				t.Errorf("decode ack request: %v", err)
-				writer.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			_ = json.NewEncoder(writer).Encode(controlplane.ConfigAckResponse{
-				Acked:     true,
-				DeviceID:  payload.DeviceID,
-				NetworkID: payload.NetworkID,
-				Revision:  payload.Revision,
-			})
 		default:
 			t.Errorf("unexpected API path %s", request.URL.Path)
 			writer.WriteHeader(http.StatusNotFound)
 		}
 	}))
+}
+
+func cliTestSignedContract(t *testing.T) (signedconfig.Config, signedconfig.SigningKeys) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize))
+	notAfter := signedconfig.CanonicalTime{Time: now.Add(24 * time.Hour)}
+	keys := signedconfig.SigningKeys{Keys: []signedconfig.SigningKey{{
+		KeyID: "signing_key_01", Algorithm: signedconfig.SignatureEd25519,
+		PublicKey: base64.StdEncoding.EncodeToString(privateKey.Public().(ed25519.PublicKey)), Status: "current",
+		NotBefore: signedconfig.CanonicalTime{Time: now.Add(-time.Hour)}, NotAfter: &notAfter,
+	}}}
+	config := signedconfig.Config{
+		SchemaVersion: 1, ConfigID: "cfg_cli", NetworkID: "net_private", DeviceID: "dev_cli", Generation: 1,
+		IssuedAt: signedconfig.CanonicalTime{Time: now.Add(-time.Minute)}, ExpiresAt: signedconfig.CanonicalTime{Time: now.Add(time.Hour)},
+		ProxyCore: signedconfig.ProxyCoreXray,
+		Transport: signedconfig.Transport{Kind: signedconfig.TransportVLESS, Loopback: signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830}, Remote: signedconfig.RemoteEndpoint{Host: "gateway.example.net", Port: 443, ServerName: "gateway.example.net"}, AuthID: "11111111-1111-1111-1111-111111111111"},
+		WireGuard: signedconfig.WireGuard{InterfaceName: "wg-xco", Addresses: []string{"10.77.0.20/32"}, MTU: 1280, Peers: []signedconfig.Peer{{GatewayID: "gw_tokyo_01", PublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", AllowedIPs: []string{"10.77.0.0/16"}, Endpoint: signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830}, PersistentKeepaliveSeconds: 25}}},
+		Signature: signedconfig.Signature{Algorithm: signedconfig.SignatureEd25519, KeyID: "signing_key_01"},
+	}
+	payload, err := config.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Signature.Value = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	return config, keys
 }
 
 func cliTestConfig() model.Config {

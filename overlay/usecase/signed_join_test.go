@@ -27,7 +27,6 @@ type signedControlPlaneFixture struct {
 	signedAckErrors []error
 	registerCalls   int
 	legacyCalls     int
-	legacyAckCalls  int
 	keyCalls        int
 	signedCalls     int
 	signedAckCalls  int
@@ -50,11 +49,6 @@ func (f *signedControlPlaneFixture) RegisterDevice(_ context.Context, request co
 func (f *signedControlPlaneFixture) GetConfig(context.Context, controlplane.ConfigRequest) (model.Config, error) {
 	f.legacyCalls++
 	return validConfig(), nil
-}
-
-func (f *signedControlPlaneFixture) AckConfig(_ context.Context, request controlplane.ConfigAckRequest) (controlplane.ConfigAckResponse, error) {
-	f.legacyAckCalls++
-	return controlplane.ConfigAckResponse{Acked: true, DeviceID: request.DeviceID, NetworkID: request.NetworkID, Revision: request.Revision}, nil
 }
 
 func (f *signedControlPlaneFixture) GetSigningKeys(context.Context, string) (controlplane.SigningKeysResponse, error) {
@@ -98,8 +92,8 @@ func TestSignedJoinAppliesBeforeGenerationAckAndPersistsLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signed join: %v", err)
 	}
-	if result.Revision != "cfg_42" || tunnelRuntime.ApplyCalls != 1 || controlPlane.signedAckCalls != 1 || controlPlane.legacyCalls != 0 || controlPlane.legacyAckCalls != 0 {
-		t.Fatalf("result=%#v apply=%d signedAck=%d legacy=%d/%d", result, tunnelRuntime.ApplyCalls, controlPlane.signedAckCalls, controlPlane.legacyCalls, controlPlane.legacyAckCalls)
+	if result.Revision != "cfg_42" || tunnelRuntime.ApplyCalls != 1 || controlPlane.signedAckCalls != 1 || controlPlane.legacyCalls != 0 {
+		t.Fatalf("result=%#v apply=%d signedAck=%d legacy=%d", result, tunnelRuntime.ApplyCalls, controlPlane.signedAckCalls, controlPlane.legacyCalls)
 	}
 	lastKnown, err := store.LoadLastKnown()
 	if err != nil || lastKnown.ConfigContract != string(usecase.ConfigContractSigned) || lastKnown.SignedGeneration != 42 || lastKnown.SignedConfigID != "cfg_42" {
@@ -150,17 +144,18 @@ func TestSignedJoinAckInterruptionDoesNotReapply(t *testing.T) {
 	}
 }
 
-func TestAutoFallsBackOnlyBeforeSignedAcceptance(t *testing.T) {
+func TestAutoRejectsWhenSignedConfigUnavailable(t *testing.T) {
 	controlPlane := newSignedControlPlaneFixture(t)
 	controlPlane.signingKeysErr = fault.New(fault.CodeSignedConfigUnavailable, "missing capability", nil)
 	tunnelRuntime := &overlayruntime.Fake{}
 	joiner, _ := newSignedJoiner(t, controlPlane, tunnelRuntime, usecase.ConfigContractAuto)
 
-	if _, err := joiner.Join(t.Context(), signedJoinRequest()); err != nil {
-		t.Fatalf("auto legacy fallback: %v", err)
+	_, err := joiner.Join(t.Context(), signedJoinRequest())
+	if fault.Code(err) != fault.CodeSignedConfigUnavailable {
+		t.Fatalf("expected CodeSignedConfigUnavailable, got: %v", err)
 	}
-	if controlPlane.legacyCalls != 1 || controlPlane.legacyAckCalls != 1 || controlPlane.signedAckCalls != 0 {
-		t.Fatalf("fallback calls legacy=%d ack=%d signedAck=%d", controlPlane.legacyCalls, controlPlane.legacyAckCalls, controlPlane.signedAckCalls)
+	if controlPlane.signedAckCalls != 0 {
+		t.Fatalf("unexpected signedAckCalls=%d", controlPlane.signedAckCalls)
 	}
 }
 
@@ -207,16 +202,27 @@ func TestAutoMigratesAcknowledgedLegacyStateWithoutRotatingLocalKey(t *testing.T
 	controlPlane := newSignedControlPlaneFixture(t)
 	store := state.NewStore(t.TempDir())
 	tunnelRuntime := &overlayruntime.Fake{}
-	now := func() time.Time { return time.Date(2026, 8, 27, 12, 15, 0, 0, time.UTC) }
-	legacyJoiner := usecase.NewJoiner(controlPlane, store, tunnelRuntime).WithKeyGenerator(fixedKeys).WithClock(now)
-	if _, err := legacyJoiner.Join(t.Context(), signedJoinRequest()); err != nil {
-		t.Fatalf("legacy join: %v", err)
+	legacyPriv, legacyPub, _ := fixedKeys()
+	legacyState := state.LastKnown{
+		Server:              signedJoinRequest().Server,
+		DeviceID:            "dev_laptop",
+		NetworkID:           "net_private",
+		WireGuardPrivateKey: legacyPriv,
+		WireGuardPublicKey:  legacyPub,
+		Phase:               state.PhaseAcknowledged,
+		ConfigContract:      string(usecase.ConfigContractLegacy),
+		Config: model.Config{
+			Revision: "legacy-rev-1",
+			Digest:   "legacy-digest-1",
+		},
 	}
-	legacyState, err := store.LoadLastKnown()
-	if err != nil {
+	if err := store.SaveLastKnown(legacyState); err != nil {
 		t.Fatal(err)
 	}
-	autoJoiner := usecase.NewJoiner(controlPlane, store, tunnelRuntime).WithKeyGenerator(fixedKeys).WithClock(now).WithConfigContract(usecase.ConfigContractAuto)
+	autoJoiner := usecase.NewJoiner(controlPlane, store, tunnelRuntime).
+		WithKeyGenerator(fixedKeys).
+		WithClock(func() time.Time { return time.Date(2026, 8, 27, 12, 15, 0, 0, time.UTC) }).
+		WithConfigContract(usecase.ConfigContractAuto)
 	result, err := autoJoiner.Join(t.Context(), signedJoinRequest())
 	if err != nil {
 		t.Fatalf("signed migration: %v", err)
@@ -228,8 +234,8 @@ func TestAutoMigratesAcknowledgedLegacyStateWithoutRotatingLocalKey(t *testing.T
 	if result.Revision != "cfg_42" || migratedState.ConfigContract != string(usecase.ConfigContractSigned) || migratedState.WireGuardPrivateKey != legacyState.WireGuardPrivateKey || migratedState.WireGuardPublicKey != legacyState.WireGuardPublicKey {
 		t.Fatalf("migration result=%#v state=%#v", result, migratedState)
 	}
-	if controlPlane.registerCalls != 1 || controlPlane.legacyCalls != 1 || controlPlane.legacyAckCalls != 1 || controlPlane.signedCalls != 1 || controlPlane.signedAckCalls != 1 || tunnelRuntime.ApplyCalls != 2 {
-		t.Fatalf("migration calls register=%d legacy=%d/%d signed=%d/%d apply=%d", controlPlane.registerCalls, controlPlane.legacyCalls, controlPlane.legacyAckCalls, controlPlane.signedCalls, controlPlane.signedAckCalls, tunnelRuntime.ApplyCalls)
+	if controlPlane.signedCalls != 1 || controlPlane.signedAckCalls != 1 || tunnelRuntime.ApplyCalls != 1 {
+		t.Fatalf("migration calls signed=%d/%d apply=%d", controlPlane.signedCalls, controlPlane.signedAckCalls, tunnelRuntime.ApplyCalls)
 	}
 }
 
