@@ -149,6 +149,8 @@ func statusError(statusCode int) error {
 		code = fault.CodeAuthenticationFailed
 	case http.StatusForbidden:
 		code = fault.CodeAccessDenied
+	case http.StatusConflict:
+		code = fault.CodeStateConflict
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		code = fault.CodeControlPlaneUnavailable
 	}

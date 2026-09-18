@@ -239,8 +239,15 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	signedConfigV2 := flags.Bool("signed-config-v2", false, "request the policy-bound SignedConfig v2 contract")
 	bootstrapRuntime := flags.Bool("bootstrap", false, "install or repair the approved managed runtime before synchronizing")
 	runtimeReleaseBaseURL := flags.String("runtime-release-base-url", os.Getenv("XCONNECT_RUNTIME_RELEASE_BASE_URL"), "approved Xray release mirror base URL")
+	watch := flags.Bool("watch", false, "run sync periodically in a watch loop")
+	interval := flags.Duration("interval", usecase.DefaultSyncInterval, "sync interval for watch loop (15s to 100s)")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "parse sync arguments", err)
+	}
+	if *watch {
+		if err := usecase.ValidateSyncInterval(*interval); err != nil {
+			return err
+		}
 	}
 	credentials := newCredentials(*stateDirectory)
 	record, err := credentials.Load(ctx)
@@ -264,9 +271,33 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	if err != nil {
 		return err
 	}
-	manager := usecase.NewDeviceSessionManager(client, state.NewStore(*stateDirectory), credentials, newRuntime(*stateDirectory))
+	runtimeInstance := newRuntime(*stateDirectory)
+	manager := usecase.NewDeviceSessionManager(client, state.NewStore(*stateDirectory), credentials, runtimeInstance)
 	if *signedConfigV2 {
 		manager.WithSignedConfigV2()
+	}
+	if *watch {
+		if firstResult, err := manager.Sync(ctx); err != nil {
+			if fault.Code(err) == fault.CodeAuthenticationFailed || fault.Code(err) == fault.CodeAccessDenied || fault.Code(err) == fault.CodeCredentialExpired || fault.Code(err) == fault.CodeCredentialMissing || fault.Code(err) == fault.CodeNotJoined {
+				return err
+			}
+			_, _ = fmt.Fprintf(stderr, "xconnect: initial sync warning: %v\n", err)
+		} else {
+			_ = writeJSON(stdout, firstResult)
+		}
+
+		loop := &usecase.SyncLoop{
+			Interval: *interval,
+			Runtime:  runtimeInstance,
+			Sync:     manager.Sync,
+			OnResult: func(res usecase.SyncResult) {
+				_ = writeJSON(stdout, res)
+			},
+			OnError: func(err error) {
+				_, _ = fmt.Fprintf(stderr, "xconnect: sync warning: %v\n", err)
+			},
+		}
+		return loop.Run(ctx)
 	}
 	result, err := manager.Sync(ctx)
 	if err != nil {
