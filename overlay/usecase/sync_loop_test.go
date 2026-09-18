@@ -153,14 +153,15 @@ func TestSyncLoopBacksOffOnTransientErrorsWithoutTearingDownTunnel(t *testing.T)
 		t.Fatalf("expected 0 Down calls during transient failures, got %d", fakeRuntime.DownCalls)
 	}
 
-	// Verify backoff sequence: 5s, 10s, 20s
+	// Verify backoff sequence: 5s, 10s, 20s (indices 1, 2, 3 after the initial tick)
 	expectedBackoffs := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second}
 	for i, expected := range expectedBackoffs {
-		if i >= len(clock.afterDurs) {
-			t.Fatalf("expected at least %d backoff after calls, got %d", len(expectedBackoffs), len(clock.afterDurs))
+		idx := i + 1
+		if idx >= len(clock.afterDurs) {
+			t.Fatalf("expected at least %d backoff after calls, got %d", len(expectedBackoffs)+1, len(clock.afterDurs))
 		}
-		if clock.afterDurs[i] != expected {
-			t.Errorf("backoff[%d]: expected %v, got %v", i, expected, clock.afterDurs[i])
+		if clock.afterDurs[idx] != expected {
+			t.Errorf("backoff[%d]: expected %v, got %v", i, expected, clock.afterDurs[idx])
 		}
 	}
 }
