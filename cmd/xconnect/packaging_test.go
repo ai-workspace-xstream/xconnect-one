@@ -29,6 +29,10 @@ func TestPackagingNoticeFileExists(t *testing.T) {
 	}
 }
 
+func normalizeLineEndings(s string) string {
+	return strings.ReplaceAll(strings.TrimSpace(s), "\r\n", "\n")
+}
+
 func TestPackagingSystemdUnitMatchesGolden(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -48,8 +52,10 @@ func TestPackagingSystemdUnitMatchesGolden(t *testing.T) {
 		t.Fatalf("failed to execute install-xconnect-one.sh --print-unit: %v", err)
 	}
 
-	if strings.TrimSpace(string(out)) != strings.TrimSpace(string(expected)) {
-		t.Errorf("systemd unit mismatch.\nGot:\n%s\nExpected:\n%s", string(out), string(expected))
+	got := normalizeLineEndings(string(out))
+	want := normalizeLineEndings(string(expected))
+	if got != want {
+		t.Errorf("systemd unit mismatch.\nGot:\n%s\nExpected:\n%s", got, want)
 	}
 }
 
