@@ -1,0 +1,16 @@
+[Unit]
+Description=XConnect One sync watch service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xconnect sync --watch --interval=60s --state-dir /var/lib/xconnect-one
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/xconnect-one /run /etc/wireguard
+
+[Install]
+WantedBy=multi-user.target
