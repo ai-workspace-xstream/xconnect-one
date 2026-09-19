@@ -19,6 +19,15 @@ class XconnectOne < Formula
     bin.install asset => "xconnect"
   end
 
+  service do
+    run [opt_bin/"xconnect", "sync", "--watch", "--interval=60s"]
+    keep_alive true
+    require_root true
+    working_dir var/"xconnect"
+    log_path var/"log/xconnect-one.log"
+    error_log_path var/"log/xconnect-one.err.log"
+  end
+
   test do
     assert_match '"joined": false', shell_output("#{bin}/xconnect status --state-dir #{testpath}/state")
   end

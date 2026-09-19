@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $repository = 'ai-workspace-xstream/XConnect-One'
 $version = if ($env:XCONNECT_ONE_VERSION) { $env:XCONNECT_ONE_VERSION } else { 'v0.1.11' }
 $installDir = if ($env:XCONNECT_ONE_INSTALL_DIR) { $env:XCONNECT_ONE_INSTALL_DIR } else { Join-Path $env:ProgramFiles 'XConnect' }
+$stateDir = if ($env:XCONNECT_ONE_STATE_DIR) { $env:XCONNECT_ONE_STATE_DIR } else { Join-Path $env:ProgramData 'XConnect' }
 $releaseBase = if ($env:XCONNECT_ONE_RELEASE_BASE_URL) { $env:XCONNECT_ONE_RELEASE_BASE_URL } else { "https://github.com/$repository/releases/download" }
 
 if ($version -notmatch '^v[0-9A-Za-z._-]+$') { throw "invalid release tag: $version" }
@@ -29,8 +30,21 @@ try {
   if ($expected -notmatch '^[0-9a-f]{64}$' -or $expected -ne $actual) { throw 'release checksum mismatch' }
 
   New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-  Copy-Item -Force $archive (Join-Path $installDir $asset)
-  Write-Output ("installed XConnect One {0} at {1}" -f $version, (Join-Path $installDir $asset))
+  $targetExe = Join-Path $installDir $asset
+  Copy-Item -Force $archive $targetExe
+  Write-Output ("installed XConnect One {0} at {1}" -f $version, $targetExe)
+
+  # Register scheduled task to run as SYSTEM at startup
+  $taskName = 'XConnectOneSync'
+  $taskAction = "`"$targetExe`" sync --watch --interval=60s --state-dir `"$stateDir`""
+  Write-Output ("registering scheduled task {0}..." -f $taskName)
+  & schtasks.exe /create /tn $taskName /tr $taskAction /sc onstart /ru "SYSTEM" /rl HIGHEST /f | Out-Null
+  Write-Output ("registered scheduled task {0} to run as SYSTEM at startup" -f $taskName)
+  Write-Output ""
+  Write-Output "XConnect One Windows scheduled task commands:"
+  Write-Output ("  Start now:     schtasks /run /tn {0}" -f $taskName)
+  Write-Output ("  Check status:  schtasks /query /tn {0} /v /fo list" -f $taskName)
+  Write-Output ("  Uninstall:     schtasks /delete /tn {0} /f" -f $taskName)
 }
 finally {
   Remove-Item -Recurse -Force -LiteralPath $tmpDir -ErrorAction SilentlyContinue
