@@ -140,10 +140,10 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Network.ID) == "" || strings.TrimSpace(c.Device.ID) == "" {
 		return fault.New(fault.CodeInvalidConfig, "validate config", nil)
 	}
-	if c.Transport.LocalPort != 51830 || c.Transport.Port != 443 {
+	if !validPort(c.Transport.LocalPort) || c.Transport.Port != 443 {
 		return fault.New(fault.CodeInvalidConfig, "validate config XHTTP ports", nil)
 	}
-	if c.Transport.Type != TransportVLESSTLS || c.Transport.Security != TransportSecurityTLS || c.Transport.PacketEncoding != PacketEncodingXUDP {
+	if (c.Transport.Type != TransportVLESSTLS && c.Transport.Type != "vless-tls-xudp") || c.Transport.Security != TransportSecurityTLS || c.Transport.PacketEncoding != PacketEncodingXUDP {
 		return fault.New(fault.CodeInvalidConfig, "validate config", nil)
 	}
 	if c.Transport.Path != "" && (!strings.HasPrefix(c.Transport.Path, "/") || len(c.Transport.Path) > 1024) {

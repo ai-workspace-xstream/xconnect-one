@@ -193,7 +193,7 @@ func (c Config) Validate() error {
 	if c.ProxyCore != ProxyCoreXray {
 		return fault.New(fault.CodeUnsupportedRuntimeCore, "validate signed config core", nil)
 	}
-	if c.Transport.Kind != TransportVLESS || c.Transport.Loopback.Host != LoopbackHost || c.Transport.Loopback.Port != 51830 || !validHost(c.Transport.Remote.Host) || c.Transport.Remote.Port != 443 || !validHost(c.Transport.Remote.ServerName) || !validID(c.Transport.AuthID) {
+	if (c.Transport.Kind != TransportVLESS && c.Transport.Kind != "vless-tls-xudp") || c.Transport.Loopback.Host != LoopbackHost || !validPort(c.Transport.Loopback.Port) || !validHost(c.Transport.Remote.Host) || c.Transport.Remote.Port != 443 || !validHost(c.Transport.Remote.ServerName) || !validID(c.Transport.AuthID) {
 		return fault.New(fault.CodeInvalidSignedConfig, "validate signed config transport", nil)
 	}
 	if c.Transport.Path != "" && (!strings.HasPrefix(c.Transport.Path, "/") || len(c.Transport.Path) > 1024) {
