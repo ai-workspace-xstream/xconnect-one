@@ -156,6 +156,23 @@ func TestSigningKeysRejectsUnknownPreviousWithoutEndAndDuplicateCurrent(t *testi
 	}
 }
 
+func TestLegacyAccountsTransportCompatibility(t *testing.T) {
+	cfg, _ := signedRuntimeConfig(t)
+	cfg.Transport.Kind = "vless-tls-xudp"
+	cfg.Transport.Loopback.Port = 18080
+	cfg.WireGuard.Peers[0].Endpoint.Port = 18080
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate legacy transport: %v", err)
+	}
+	compiled, err := Compile(cfg)
+	if err != nil {
+		t.Fatalf("compile legacy transport: %v", err)
+	}
+	if compiled.Transport.LocalPort != 18080 {
+		t.Fatalf("compiled local port = %d, want 18080", compiled.Transport.LocalPort)
+	}
+}
+
 func goldenConfig() Config {
 	return Config{
 		SchemaVersion: 1, ConfigID: "cfg_01xconnect", NetworkID: "net_private", DeviceID: "dev_laptop", Generation: 42,
