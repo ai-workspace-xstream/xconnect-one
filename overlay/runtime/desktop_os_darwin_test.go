@@ -88,6 +88,17 @@ func TestDarwinWireGuardMappingMatchesWgQuickContract(t *testing.T) {
 	}
 }
 
+func TestDarwinStartTokenIsIndependentOfPsLocaleAndTimezone(t *testing.T) {
+	command := "/managed/xray run -config /private/runtime/xray.json"
+	legacy := darwinStartToken("三  9月/30 16:29:16 2026", command)
+	if !darwinStartTokenMatches(legacy, []string{"Wed Sep 30 08:29:16 2026", "三  9月/30 16:29:16 2026"}, command) {
+		t.Fatal("localized legacy process identity was not recognized")
+	}
+	if darwinStartTokenMatches(legacy, []string{"Wed Sep 30 08:29:16 2026", "三  9月/30 16:29:16 2026"}, command+" altered") {
+		t.Fatal("process identity accepted a changed command")
+	}
+}
+
 func TestDarwinWireGuardMappingRejectsUnsafeOrStaleState(t *testing.T) {
 	cases := []struct {
 		name    string

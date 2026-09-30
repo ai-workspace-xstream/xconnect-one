@@ -18,6 +18,10 @@ import (
 
 type FileStore struct{ path string }
 
+func SaveProtectedRecord(ctx context.Context, stateDirectory string, record Record) error {
+	return NewFileStore(stateDirectory).Save(ctx, record)
+}
+
 func NewFileStore(stateDirectory string) *FileStore {
 	return &FileStore{path: filepath.Join(stateDirectory, "protected", "device-credential.json")}
 }

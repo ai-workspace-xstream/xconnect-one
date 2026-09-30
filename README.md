@@ -18,6 +18,8 @@ on a sibling checkout. It does not change or replace `xconnect-app`.
 
 ## Quick start: one shell
 
+For enrolled macOS clients, see [macOS autostart and runtime recovery](docs/macos-runtime-setup.md). The root LaunchDaemon uses protected credentials independently of login Keychain unlock; use a matching updated binary.
+
 The user-facing path is intentionally short: choose a Gateway, paste a
 short-lived Zero invitation through stdin, and let the wrapper run the normal
 CLI lifecycle. The wrapper never reads Vault or stores the invitation.

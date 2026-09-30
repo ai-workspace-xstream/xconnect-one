@@ -64,3 +64,23 @@ func TestKeychainStoreUsesStdinAndNeverArgvForSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestExplicitKeychainIsReadOnlyForMigration(t *testing.T) {
+	command := &fakeKeychainCommand{}
+	store := &KeychainStore{account: "test", keychain: "/Users/test/login.keychain-db", command: command}
+	if err := store.Save(t.Context(), validRecord(t)); err == nil || len(command.calls) != 0 {
+		t.Fatal("explicit Keychain save must fail before invoking security")
+	}
+	_, _ = store.Load(t.Context())
+	args := command.calls[0]
+	if args[len(args)-1] != store.keychain {
+		t.Fatalf("missing explicit Keychain path: %v", args)
+	}
+}
+
+func TestDarwinProtectedBackendSelection(t *testing.T) {
+	t.Setenv("XCONNECT_CREDENTIAL_BACKEND", "file")
+	if _, ok := NewPlatformStore(t.TempDir()).(*FileStore); !ok {
+		t.Fatal("daemon must use protected file backend")
+	}
+}

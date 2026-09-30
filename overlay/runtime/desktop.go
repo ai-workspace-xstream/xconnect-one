@@ -592,8 +592,13 @@ func (r *Desktop) manifestHealthy(ctx context.Context, manifest desktopManifest,
 		return false, fault.New(fault.CodeRuntimeProcessStale, "verify runtime metadata ownership", nil)
 	}
 	index, err := r.backend.InterfaceIndex(manifest.Interface)
-	if err != nil || index == 0 || index != manifest.InterfaceIndex {
+	if err != nil || (index != 0 && index != manifest.InterfaceIndex) {
 		return false, fault.New(fault.CodeRuntimeProcessStale, "verify WireGuard interface identity", nil)
+	}
+	if index == 0 {
+		// A missing tunnel is unhealthy, not an ownership conflict. Apply will
+		// still validate the manifest and Xray identity before stopping/rebuilding.
+		return false, nil
 	}
 	trusted, err := r.processTrusted(manifest)
 	if err != nil || !trusted {
