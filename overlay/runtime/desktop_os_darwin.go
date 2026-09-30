@@ -276,11 +276,11 @@ func (b *osDesktopBackend) ProcessAlive(identity processIdentity) (bool, error) 
 	if len(fields) == 0 || canonicalPath(fields[0]) != canonicalPath(identity.Executable) {
 		return false, errors.New("executable identity mismatch")
 	}
-	token, err := darwinProcessStartToken(identity.PID)
+	started, err := darwinPS(identity.PID, "lstart=")
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if err != nil || token != identity.StartToken {
+	if err != nil || !darwinStartTokenMatches(identity.StartToken, darwinProcessStartTimes(identity.PID, started), commandLine) {
 		return false, errors.New("process start identity mismatch")
 	}
 	return true, nil
@@ -351,7 +351,7 @@ func (b *osDesktopBackend) LoopbackOwned(identity processIdentity, address strin
 }
 
 func darwinProcessStartToken(pid int) (string, error) {
-	started, err := darwinPS(pid, "lstart=")
+	started, err := darwinPSLocale(pid, "lstart=", "C", "UTC")
 	if err != nil {
 		return "", err
 	}
@@ -359,12 +359,59 @@ func darwinProcessStartToken(pid int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return darwinStartToken(started, command), nil
+}
+
+// A runtime manifest can outlive the locale of the process that created it.
+// macOS localizes `ps lstart` (including weekday, month and spacing), so the
+// old token may differ even though the PID, executable, arguments and config
+// digest still identify the exact same process. Write new tokens in a stable
+// locale and accept the known legacy locale renderings for migration.
+func darwinStartTokenMatches(want string, starts []string, command string) bool {
+	for _, started := range starts {
+		if darwinStartToken(started, command) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func darwinProcessStartTimes(pid int, fallback string) []string {
+	starts := []string{fallback}
+	for _, candidate := range []struct{ locale, timezone string }{
+		{"C", "UTC"}, {"C", "Asia/Shanghai"},
+		{"zh_CN.UTF-8", "UTC"}, {"zh_CN.UTF-8", "Asia/Shanghai"},
+		{"en_US.UTF-8", "UTC"}, {"en_US.UTF-8", "Asia/Shanghai"},
+	} {
+		started, err := darwinPSLocale(pid, "lstart=", candidate.locale, candidate.timezone)
+		if err == nil && !containsString(starts, started) {
+			starts = append(starts, started)
+		}
+	}
+	return starts
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func darwinStartToken(started, command string) string {
 	digest := sha256.Sum256([]byte(started + "\n" + command))
-	return hex.EncodeToString(digest[:]), nil
+	return hex.EncodeToString(digest[:])
 }
 
 func darwinPS(pid int, field string) (string, error) {
+	return darwinPSLocale(pid, field, "", "")
+}
+
+func darwinPSLocale(pid int, field, locale, timezone string) (string, error) {
 	command := exec.Command("/bin/ps", "-ww", "-p", strconv.Itoa(pid), "-o", field)
+	command.Env = darwinCommandEnvironment(locale, timezone)
 	raw, err := command.Output()
 	if err != nil {
 		if _, ok := err.(*exec.ExitError); ok {
@@ -377,6 +424,23 @@ func darwinPS(pid int, field string) (string, error) {
 		return "", os.ErrNotExist
 	}
 	return value, nil
+}
+
+func darwinCommandEnvironment(locale, timezone string) []string {
+	environment := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "LC_ALL=") || strings.HasPrefix(entry, "TZ=") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	if locale != "" {
+		environment = append(environment, "LC_ALL="+locale)
+	}
+	if timezone != "" {
+		environment = append(environment, "TZ="+timezone)
+	}
+	return environment
 }
 
 func canonicalPath(path string) string {

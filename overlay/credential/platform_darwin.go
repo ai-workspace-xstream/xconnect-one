@@ -2,4 +2,11 @@
 
 package credential
 
-func NewPlatformStore(stateDirectory string) Store { return NewKeychainStore(stateDirectory) }
+import "os"
+
+func NewPlatformStore(stateDirectory string) Store {
+	if os.Getenv("XCONNECT_CREDENTIAL_BACKEND") == "file" {
+		return NewFileStore(stateDirectory)
+	}
+	return NewKeychainStore(stateDirectory)
+}

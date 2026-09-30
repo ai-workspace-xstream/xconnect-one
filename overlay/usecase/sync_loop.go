@@ -64,10 +64,11 @@ func isFatal(err error) bool {
 		fault.CodeCredentialExpired,
 		fault.CodeCredentialMissing,
 		fault.CodeCredentialInvalid,
-		fault.CodeEnrollmentExpired,
 		fault.CodeNotJoined:
 		return true
 	default:
+		// An expired short-lived session is cleared by DeviceSessionManager.
+		// Retry with the durable device credential instead of exiting the daemon.
 		return false
 	}
 }

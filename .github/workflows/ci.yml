@@ -24,6 +24,9 @@ jobs:
         shell: bash
         run: test -z "$(gofmt -l cmd overlay)"
       - run: go vet ./...
+      - name: Validate setup shell syntax
+        shell: bash
+        run: bash -n scripts/setup-xconnect-one-macos.sh scripts/install-xconnect-one.sh
       - run: go test -race -count=1 ./...
       - name: Test macOS desktop verifier offline
         if: runner.os == 'macOS'

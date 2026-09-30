@@ -129,8 +129,6 @@ fi
 
 if [[ "$os" == "Darwin" ]]; then
   echo ""
-  echo "XConnect One macOS service commands (Homebrew):"
-  echo "  Start and enable: sudo brew services start xconnect-one"
-  echo "  Check status:     sudo brew services info xconnect-one"
-  echo "  Stop and disable: sudo brew services stop xconnect-one"
+  echo "After enrollment, use scripts/setup-xconnect-one-macos.sh from a matching checkout."
+  echo "  Check status: sudo launchctl print system/com.xconnect.one"
 fi

@@ -364,8 +364,27 @@ func runLeave(ctx context.Context, args []string, stdout, stderr io.Writer, http
 }
 
 func runCredential(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
+	if len(args) > 0 && args[0] == "migrate-to-protected" {
+		flags := flag.NewFlagSet("xconnect credential migrate-to-protected", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+			return fault.New(fault.CodeInvalidInput, "parse protected credential migration arguments", err)
+		}
+		record, err := newCredentials(*stateDirectory).Load(ctx)
+		if err != nil {
+			return fault.New(fault.CodeCredentialStorage, "read existing protected device credential", err)
+		}
+		if os.Geteuid() != 0 {
+			return fault.New(fault.CodeRuntimePermission, "write root protected device credential", nil)
+		}
+		if err := credential.SaveProtectedRecord(ctx, *stateDirectory, record); err != nil {
+			return err
+		}
+		return writeJSON(stdout, map[string]any{"migrated": true, "backend": "root-protected-file", "device_id": record.DeviceID})
+	}
 	if len(args) == 0 || args[0] != "rotate" {
-		return fault.New(fault.CodeInvalidInput, "expected credential rotate", nil)
+		return fault.New(fault.CodeInvalidInput, "expected credential rotate or migrate-to-protected", nil)
 	}
 	flags := flag.NewFlagSet("xconnect credential rotate", flag.ContinueOnError)
 	flags.SetOutput(stderr)

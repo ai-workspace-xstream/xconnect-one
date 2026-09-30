@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -40,19 +41,27 @@ func (osKeychainCommand) Run(ctx context.Context, arguments []string, stdin []by
 }
 
 type KeychainStore struct {
-	account string
-	command keychainCommand
+	account  string
+	keychain string
+	command  keychainCommand
 }
 
 func NewKeychainStore(stateDirectory string) *KeychainStore {
 	sum := sha256.Sum256([]byte(stateDirectory))
-	return &KeychainStore{account: "state-" + hex.EncodeToString(sum[:16]), command: osKeychainCommand{}}
+	return &KeychainStore{account: "state-" + hex.EncodeToString(sum[:16]), keychain: strings.TrimSpace(os.Getenv("XCONNECT_KEYCHAIN_PATH")), command: osKeychainCommand{}}
 }
 
 func (s *KeychainStore) Backend() string { return "macos-keychain" }
 
+func (s *KeychainStore) keychainArgs(arguments []string) []string {
+	if s.keychain == "" {
+		return arguments
+	}
+	return append(arguments, s.keychain)
+}
+
 func (s *KeychainStore) Load(ctx context.Context) (Record, error) {
-	raw, err := s.command.Run(ctx, []string{"find-generic-password", "-a", s.account, "-s", keychainService, "-w"}, nil)
+	raw, err := s.command.Run(ctx, s.keychainArgs([]string{"find-generic-password", "-a", s.account, "-s", keychainService, "-w"}), nil)
 	if err != nil {
 		return Record{}, ErrNotFound
 	}
@@ -72,6 +81,11 @@ func (s *KeychainStore) Load(ctx context.Context) (Record, error) {
 }
 
 func (s *KeychainStore) Save(ctx context.Context, record Record) error {
+	// An explicit login Keychain is read-only for migration. Appending its
+	// path after -w could be interpreted as a password by security(1).
+	if s.keychain != "" {
+		return fault.New(fault.CodeCredentialStorage, "explicit Keychain path is read-only; migrate to protected storage", nil)
+	}
 	record.SchemaVersion = SchemaVersion
 	if err := record.Validate(); err != nil {
 		return err
@@ -90,7 +104,7 @@ func (s *KeychainStore) Save(ctx context.Context, record Record) error {
 }
 
 func (s *KeychainStore) Delete(ctx context.Context) error {
-	_, err := s.command.Run(ctx, []string{"delete-generic-password", "-a", s.account, "-s", keychainService}, nil)
+	_, err := s.command.Run(ctx, s.keychainArgs([]string{"delete-generic-password", "-a", s.account, "-s", keychainService}), nil)
 	if err != nil && !strings.Contains(err.Error(), "could not be found") {
 		// Command output is deliberately discarded, and no raw credential is an
 		// argument. Treat an absent item as idempotent through a read probe.
