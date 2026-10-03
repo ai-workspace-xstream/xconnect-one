@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/pathmanager"
 )
 
 var interfaceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_=+.-]{1,15}$`)
@@ -66,6 +67,7 @@ type Device struct {
 }
 
 type WireGuardConfig struct {
+	ListenPort           int      `json:"listen_port,omitempty"`
 	Interface            string   `json:"interface"`
 	Address              string   `json:"address"`
 	MTU                  int      `json:"mtu"`
@@ -119,18 +121,37 @@ type OverlayNode struct {
 }
 
 type Config struct {
-	SchemaVersion int             `json:"schema_version"`
-	Revision      string          `json:"revision"`
-	Digest        string          `json:"digest"`
-	Network       Network         `json:"network"`
-	Device        Device          `json:"device"`
-	WireGuard     WireGuardConfig `json:"wireguard"`
-	Transport     TransportConfig `json:"transport"`
-	Nodes         []OverlayNode   `json:"nodes,omitempty"`
-	ETag          string          `json:"-"`
+	SchemaVersion int                 `json:"schema_version"`
+	Revision      string              `json:"revision"`
+	Digest        string              `json:"digest"`
+	Network       Network             `json:"network"`
+	Device        Device              `json:"device"`
+	WireGuard     WireGuardConfig     `json:"wireguard"`
+	Transport     TransportConfig     `json:"transport"`
+	Nodes         []OverlayNode       `json:"nodes,omitempty"`
+	Mesh          *pathmanager.Config `json:"mesh,omitempty"`
+	ETag          string              `json:"-"`
 }
 
 func (c Config) Validate() error {
+	if c.Mesh != nil {
+		if c.Mesh.NetworkID != c.Network.ID || c.Mesh.DeviceID != c.Device.ID {
+			return fault.New(fault.CodeInvalidConfig, "validate mesh binding", nil)
+		}
+		if c.Mesh.GatewayPublicKey != c.WireGuard.PeerPublicKey || c.Mesh.Interface != c.WireGuard.Interface {
+			return fault.New(fault.CodeInvalidConfig, "validate mesh transport binding", nil)
+		}
+		if c.Mesh.RelayEndpoint == "" {
+			if err := (pathmanager.Spec{Peers: c.Mesh.Peers}).Validate(c.Device.ID); err != nil {
+				return fault.New(fault.CodeInvalidConfig, "validate mesh peers", err)
+			}
+		}
+		if c.Mesh.RelayEndpoint != "" {
+			if err := c.Mesh.Validate(); err != nil {
+				return fault.New(fault.CodeInvalidConfig, "validate mesh runtime", err)
+			}
+		}
+	}
 	if c.Transport.Runtime != WireRuntimeXrayCore {
 		return fault.New(fault.CodeUnsupportedRuntimeCore, "validate config", nil)
 	}

@@ -35,6 +35,7 @@ var (
 )
 
 type Rule struct {
+	WholeDevice        bool     `json:"whole_device,omitempty"`
 	ID                 string   `json:"id"`
 	Action             string   `json:"action"`
 	SourceDevices      []string `json:"source_devices"`
@@ -161,6 +162,9 @@ func validateArtifact(artifact Artifact, networkID string) error {
 	for index, rule := range artifact.Rules {
 		if !idPattern.MatchString(rule.ID) || ruleIDs[rule.ID] || rule.Action != "accept" && rule.Action != "deny" {
 			return invalid("validate policy rule")
+		}
+		if rule.WholeDevice && (rule.Action != "accept" || !exactStrings(rule.Protocols, []string{"icmp", "tcp", "udp"}) || len(rule.Ports) != 65535) {
+			return invalid("validate whole-device grant")
 		}
 		ruleIDs[rule.ID] = true
 		if index > 0 && !canonicalRuleOrder(artifact.Rules[index-1], rule) || len(rule.SourceDevices) == 0 || len(rule.DestinationDevices) == 0 || !validDevices(rule.SourceDevices) || !validDevices(rule.DestinationDevices) || !validProtocols(rule.Protocols) || !validPorts(rule.Protocols, rule.Ports) {

@@ -13,12 +13,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/pathmanager"
 )
 
 const desktopManifestVersion = 1
@@ -35,20 +37,21 @@ type processIdentity struct {
 }
 
 type desktopManifest struct {
-	SchemaVersion   int             `json:"schema_version"`
-	Revision        string          `json:"revision"`
-	CoreID          string          `json:"core_id"`
-	AdapterID       string          `json:"adapter_id"`
-	Interface       string          `json:"interface"`
-	LoopbackAddress string          `json:"loopback_address"`
-	XrayConfigPath  string          `json:"xray_config_path"`
-	WGConfigPath    string          `json:"wireguard_config_path"`
-	WGConfigSHA256  string          `json:"wireguard_config_sha256"`
-	Xray            processIdentity `json:"xray_process"`
-	WireGuardUp     bool            `json:"wireguard_up"`
-	InterfaceIndex  int             `json:"interface_index"`
-	Stopped         bool            `json:"stopped,omitempty"`
-	AppliedAt       time.Time       `json:"applied_at"`
+	SchemaVersion   int              `json:"schema_version"`
+	Revision        string           `json:"revision"`
+	CoreID          string           `json:"core_id"`
+	AdapterID       string           `json:"adapter_id"`
+	Interface       string           `json:"interface"`
+	LoopbackAddress string           `json:"loopback_address"`
+	XrayConfigPath  string           `json:"xray_config_path"`
+	WGConfigPath    string           `json:"wireguard_config_path"`
+	WGConfigSHA256  string           `json:"wireguard_config_sha256"`
+	Xray            processIdentity  `json:"xray_process"`
+	PathManager     *processIdentity `json:"path_manager_process,omitempty"`
+	WireGuardUp     bool             `json:"wireguard_up"`
+	InterfaceIndex  int              `json:"interface_index"`
+	Stopped         bool             `json:"stopped,omitempty"`
+	AppliedAt       time.Time        `json:"applied_at"`
 }
 
 type desktopBackend interface {
@@ -152,7 +155,7 @@ func (r *Desktop) Apply(ctx context.Context, request ApplyRequest) (ApplyResult,
 		return ApplyResult{}, activeErr
 	}
 	if activeErr == nil {
-		if active.Stopped && active.Revision == request.Config.Revision {
+		if active.Stopped && active.Revision == request.Config.Revision && meshMatches(active, request.Config.Mesh) {
 			if !r.manifestMetadataTrusted(active, dependencies) {
 				return ApplyResult{}, fault.New(fault.CodeRuntimeProcessStale, "verify stopped runtime metadata ownership", nil)
 			}
@@ -170,7 +173,33 @@ func (r *Desktop) Apply(ctx context.Context, request ApplyRequest) (ApplyResult,
 		if healthErr != nil && fault.Code(healthErr) == fault.CodeRuntimeProcessStale {
 			return ApplyResult{}, healthErr
 		}
-		if healthy && active.Revision == request.Config.Revision {
+		if healthy && active.PathManager != nil && request.Config.Mesh != nil && !meshMatches(active, request.Config.Mesh) {
+			handled, err := r.reconcileMesh(ctx, active, request, dependencies)
+			if err != nil {
+				return ApplyResult{}, fault.New(fault.CodeRuntimeApplyFailed, "reconcile mesh peers", err)
+			}
+			if handled {
+				return applyResult(request.Config), nil
+			}
+		}
+		if healthy && active.PathManager != nil && request.Config.Mesh != nil && active.Revision != request.Config.Revision && meshMatches(active, request.Config.Mesh) {
+			handled, err := r.reconcileMesh(ctx, active, request, dependencies)
+			if err != nil {
+				return ApplyResult{}, err
+			}
+			if handled {
+				return applyResult(request.Config), nil
+			}
+		}
+		if healthy && active.Revision == request.Config.Revision && meshMatches(active, request.Config.Mesh) {
+			if request.Config.Mesh != nil {
+				if err := refreshMeshExpiry(&active, request.Config.Mesh.ExpiresAt); err != nil {
+					return ApplyResult{}, err
+				}
+				if err := r.saveManifest(r.activeManifestPath(), active); err != nil {
+					return ApplyResult{}, err
+				}
+			}
 			if err := r.cleanupRetainedRevisions(active); err != nil {
 				return ApplyResult{}, err
 			}
@@ -265,6 +294,10 @@ func (r *Desktop) Status(ctx context.Context) (Status, error) {
 	result.CoreID = manifest.CoreID
 	result.AdapterID = manifest.AdapterID
 	result.Interface = interfaceName
+	if manifest.PathManager != nil {
+		raw, _ := os.ReadFile(filepath.Join(filepath.Dir(manifest.WGConfigPath), "paths.json"))
+		_ = json.Unmarshal(raw, &result.Paths)
+	}
 	return result, nil
 }
 
@@ -442,6 +475,11 @@ func (r *Desktop) prepare(request ApplyRequest, xrayPath string) (desktopManifes
 			_ = os.RemoveAll(revisionDirectory)
 		}
 	}()
+	if request.Config.Mesh != nil {
+		if err := allocateMesh(&request.Config); err != nil {
+			return desktopManifest{}, err
+		}
+	}
 	xrayConfig, err := renderXrayConfig(request.Config)
 	if err != nil {
 		return desktopManifest{}, fault.New(fault.CodeInvalidConfig, "render Xray config", nil)
@@ -473,6 +511,22 @@ func (r *Desktop) prepare(request ApplyRequest, xrayPath string) (desktopManifes
 			ConfigSHA256: hex.EncodeToString(configHash[:]),
 			Revision:     request.Config.Revision,
 		},
+	}
+	if request.Config.Mesh != nil {
+		path := filepath.Join(revisionDirectory, "path-manager.json")
+		data, err := json.Marshal(meshRuntimeFile{Config: *request.Config.Mesh, WGConfigPath: wgConfigPath, StatusPath: filepath.Join(revisionDirectory, "paths.json")})
+		if err != nil {
+			return desktopManifest{}, err
+		}
+		if err = writeFile0600(path, data); err != nil {
+			return desktopManifest{}, err
+		}
+		digest := sha256.Sum256(data)
+		executable, err := os.Executable()
+		if err != nil {
+			return desktopManifest{}, err
+		}
+		manifest.PathManager = &processIdentity{Executable: canonicalPath(executable), ConfigPath: path, ConfigSHA256: hex.EncodeToString(digest[:]), Revision: manifest.Revision}
 	}
 	prepared = true
 	return manifest, nil
@@ -509,13 +563,33 @@ func (r *Desktop) startManifest(ctx context.Context, manifest desktopManifest, d
 		_ = r.backend.Stop(manifest.Xray)
 		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "verify Xray runtime", nil)
 	}
+	if manifest.PathManager != nil {
+		identity, err := r.backend.Start(manifest.PathManager.Executable, []string{"path-manager", "-config", manifest.PathManager.ConfigPath}, manifest.Revision, manifest.PathManager.ConfigSHA256)
+		if err != nil {
+			_ = r.backend.Stop(manifest.Xray)
+			return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "start path manager", err)
+		}
+		identity.ConfigPath = manifest.PathManager.ConfigPath
+		manifest.PathManager = &identity
+		if err := r.waitForPathManager(ctx, manifest); err != nil {
+			_ = r.backend.Stop(identity)
+			_ = r.backend.Stop(manifest.Xray)
+			return desktopManifest{}, err
+		}
+	}
 	if err := r.run(ctx, dependencies.wgQuick, "up", manifest.WGConfigPath); err != nil {
+		if manifest.PathManager != nil {
+			_ = r.backend.Stop(*manifest.PathManager)
+		}
 		// A failed up does not establish ownership. Never delete by name here.
 		_ = r.backend.Stop(manifest.Xray)
 		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "start WireGuard runtime", nil)
 	}
 	index, err = r.backend.InterfaceIndex(manifest.Interface)
 	if err != nil || index == 0 {
+		if manifest.PathManager != nil {
+			_ = r.backend.Stop(*manifest.PathManager)
+		}
 		_ = r.backend.Stop(manifest.Xray)
 		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "capture WireGuard interface identity", nil)
 	}
@@ -555,6 +629,12 @@ func (r *Desktop) stopManifest(ctx context.Context, manifest desktopManifest, de
 				return fault.New(fault.CodeRuntimeApplyFailed, "stop WireGuard runtime", nil)
 			}
 		}
+	}
+	if manifest.PathManager != nil {
+		if err := r.backend.Stop(*manifest.PathManager); err != nil {
+			return fault.New(fault.CodeRuntimeProcessStale, "stop path manager", err)
+		}
+		_ = os.Remove(filepath.Join(r.dir, "overlay-status.json"))
 	}
 	if trusted {
 		if err := r.backend.Stop(manifest.Xray); err != nil {
@@ -604,6 +684,15 @@ func (r *Desktop) manifestHealthy(ctx context.Context, manifest desktopManifest,
 	if err != nil || !trusted {
 		return false, err
 	}
+	if manifest.PathManager != nil {
+		alive, e := r.backend.ProcessAlive(*manifest.PathManager)
+		if e != nil || !alive {
+			return false, e
+		}
+		if !meshSocketsOwned(r.backend, manifest) {
+			return false, nil
+		}
+	}
 	owned, err := r.backend.LoopbackOwned(manifest.Xray, manifest.LoopbackAddress)
 	if err != nil || !owned {
 		return false, nil
@@ -635,6 +724,24 @@ func (r *Desktop) manifestMetadataTrusted(manifest desktopManifest, dependencies
 	wgDigest := sha256.Sum256(wgConfig)
 	if hex.EncodeToString(wgDigest[:]) != manifest.WGConfigSHA256 {
 		return false
+	}
+	if manifest.PathManager != nil {
+		path := filepath.Join(directory, "path-manager.json")
+		executable, e := os.Executable()
+		if e != nil || canonicalPath(manifest.PathManager.Executable) != canonicalPath(executable) {
+			return false
+		}
+		if manifest.PathManager.ConfigPath != path || !privateRegularFile(path) || manifest.PathManager.Revision != manifest.Revision {
+			return false
+		}
+		raw, e := os.ReadFile(path)
+		if e != nil {
+			return false
+		}
+		digest := sha256.Sum256(raw)
+		if hex.EncodeToString(digest[:]) != manifest.PathManager.ConfigSHA256 {
+			return false
+		}
 	}
 	if !privateDirectory(directory) {
 		return false
@@ -870,6 +977,9 @@ func renderWireGuardConfig(config model.Config, privateKey string) string {
 	builder.WriteString("\nAddress = ")
 	builder.WriteString(config.WireGuard.Address)
 	builder.WriteString(fmt.Sprintf("\nMTU = %d\n", config.WireGuard.MTU))
+	if config.Mesh != nil {
+		builder.WriteString(fmt.Sprintf("ListenPort = %d\n", config.WireGuard.ListenPort))
+	}
 	if len(config.WireGuard.DNS) > 0 {
 		builder.WriteString("DNS = ")
 		builder.WriteString(strings.Join(config.WireGuard.DNS, ", "))
@@ -885,6 +995,11 @@ func renderWireGuardConfig(config model.Config, privateKey string) string {
 		builder.WriteString(fmt.Sprintf("\nPersistentKeepalive = %d", config.WireGuard.PersistentKeepalive))
 	}
 	builder.WriteByte('\n')
+	if config.Mesh != nil {
+		for _, p := range config.Mesh.Peers {
+			fmt.Fprintf(&builder, "\n[Peer]\nPublicKey = %s\nAllowedIPs = %s\nEndpoint = %s\nPersistentKeepalive = %d\n", p.PublicKey, p.Address, p.LocalEndpoint, pathmanager.WireGuardKeepalive(config.Mesh.DeviceID, p.DeviceID))
+		}
+	}
 	return builder.String()
 }
 
@@ -933,6 +1048,11 @@ func renderXrayConfig(config model.Config) ([]byte, error) {
 				},
 			},
 		}},
+	}
+	if config.Mesh != nil {
+		host, portText, _ := net.SplitHostPort(config.Mesh.RelayEndpoint)
+		port, _ := strconv.Atoi(portText)
+		profile["inbounds"] = append(profile["inbounds"].([]any), map[string]any{"tag": "xconnect-peer-relay-in", "listen": host, "port": port, "protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1", "port": 51821, "network": "tcp"}})
 	}
 	return json.MarshalIndent(profile, "", "  ")
 }

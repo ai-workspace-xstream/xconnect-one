@@ -3,6 +3,7 @@ package policy
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -95,4 +96,35 @@ func verifiedReference(t *testing.T, network string, generation uint64, digest s
 		t.Fatalf("reference: %v", err)
 	}
 	return reference
+}
+
+func TestWholeDeviceGrantMustBeExplicitAndUnrestricted(t *testing.T) {
+	raw, e := os.ReadFile("testdata/policy-enforcement-artifact.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var artifact Artifact
+	if e = json.Unmarshal(raw, &artifact); e != nil {
+		t.Fatal(e)
+	}
+	rule := artifact.Rules[0]
+	rule.Action = "accept"
+	rule.WholeDevice = true
+	rule.Protocols = []string{"icmp", "tcp", "udp"}
+	rule.Ports = make([]int, 65535)
+	for i := range rule.Ports {
+		rule.Ports[i] = i + 1
+	}
+	artifact.Rules = []Rule{rule}
+	if e = validateArtifact(artifact, artifact.NetworkID); e != nil {
+		t.Fatal(e)
+	}
+	artifact.Rules[0].Ports = []int{443}
+	if validateArtifact(artifact, artifact.NetworkID) == nil {
+		t.Fatal("limited port scope accepted as whole device")
+	}
+	artifact.Rules[0].WholeDevice = false
+	if e = validateArtifact(artifact, artifact.NetworkID); e != nil {
+		t.Fatal("legacy port scoped rule changed", e)
+	}
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/pathmanager"
 )
 
 const (
@@ -116,19 +117,20 @@ type WireGuard struct {
 }
 
 type Config struct {
-	SchemaVersion int           `json:"schema_version"`
-	ConfigID      string        `json:"config_id"`
-	NetworkID     string        `json:"network_id"`
-	DeviceID      string        `json:"device_id"`
-	Generation    uint64        `json:"generation"`
-	IssuedAt      CanonicalTime `json:"issued_at"`
-	ExpiresAt     CanonicalTime `json:"expires_at"`
-	ProxyCore     string        `json:"proxy_core"`
-	Transport     Transport     `json:"transport"`
-	WireGuard     WireGuard     `json:"wireguard"`
-	Policy        *Policy       `json:"policy,omitempty"`
-	Signature     Signature     `json:"signature"`
-	ETag          string        `json:"-"`
+	SchemaVersion int               `json:"schema_version"`
+	ConfigID      string            `json:"config_id"`
+	NetworkID     string            `json:"network_id"`
+	DeviceID      string            `json:"device_id"`
+	Generation    uint64            `json:"generation"`
+	IssuedAt      CanonicalTime     `json:"issued_at"`
+	ExpiresAt     CanonicalTime     `json:"expires_at"`
+	ProxyCore     string            `json:"proxy_core"`
+	Transport     Transport         `json:"transport"`
+	WireGuard     WireGuard         `json:"wireguard"`
+	Policy        *Policy           `json:"policy,omitempty"`
+	Mesh          *pathmanager.Spec `json:"mesh,omitempty"`
+	Signature     Signature         `json:"signature"`
+	ETag          string            `json:"-"`
 }
 
 // Policy is a signed, same-origin reference to the canonical local-policy
@@ -184,6 +186,33 @@ func DecodeSigningKeys(raw []byte) (SigningKeys, error) {
 }
 
 func (c Config) Validate() error {
+	if c.Mesh != nil {
+		if c.SchemaVersion != SchemaVersionV2 {
+			return fault.New(fault.CodeInvalidSignedConfig, "mesh requires signed v2", nil)
+		}
+		if e := c.Mesh.Validate(c.DeviceID); e != nil {
+			return fault.New(fault.CodeInvalidSignedConfig, "validate mesh peers", e)
+		}
+		if len(c.WireGuard.Addresses) != 1 || len(c.WireGuard.Peers) != 1 {
+			return fault.New(fault.CodeInvalidSignedConfig, "mesh requires gateway baseline", nil)
+		}
+		own, _ := netip.ParsePrefix(c.WireGuard.Addresses[0])
+		gateway := c.WireGuard.Peers[0]
+		for _, p := range c.Mesh.Peers {
+			address, _ := netip.ParsePrefix(p.Address)
+			contained := false
+			for _, cidr := range gateway.AllowedIPs {
+				prefix, e := netip.ParsePrefix(cidr)
+				if e == nil && prefix.Contains(address.Addr()) {
+					contained = true
+				}
+			}
+			if !validID(p.DeviceID) || p.PublicKey == gateway.PublicKey || address.Addr() == own.Addr() || !contained {
+				return fault.New(fault.CodeInvalidSignedConfig, "invalid mesh peer binding", nil)
+			}
+		}
+	}
+
 	if c.SchemaVersion != SchemaVersionV1 && c.SchemaVersion != SchemaVersionV2 || !validID(c.ConfigID) || !validID(c.NetworkID) || !validID(c.DeviceID) || c.Generation == 0 {
 		return fault.New(fault.CodeInvalidSignedConfig, "validate signed config identity", nil)
 	}
@@ -281,18 +310,19 @@ func (k SigningKeys) Validate() error {
 func (c Config) SigningBytes() ([]byte, error) {
 	if c.SchemaVersion == SchemaVersionV2 {
 		payload := struct {
-			SchemaVersion int           `json:"schema_version"`
-			ConfigID      string        `json:"config_id"`
-			NetworkID     string        `json:"network_id"`
-			DeviceID      string        `json:"device_id"`
-			Generation    uint64        `json:"generation"`
-			IssuedAt      CanonicalTime `json:"issued_at"`
-			ExpiresAt     CanonicalTime `json:"expires_at"`
-			ProxyCore     string        `json:"proxy_core"`
-			Transport     Transport     `json:"transport"`
-			WireGuard     WireGuard     `json:"wireguard"`
-			Policy        *Policy       `json:"policy"`
-		}{c.SchemaVersion, c.ConfigID, c.NetworkID, c.DeviceID, c.Generation, c.IssuedAt, c.ExpiresAt, c.ProxyCore, c.Transport, c.WireGuard, c.Policy}
+			SchemaVersion int               `json:"schema_version"`
+			ConfigID      string            `json:"config_id"`
+			NetworkID     string            `json:"network_id"`
+			DeviceID      string            `json:"device_id"`
+			Generation    uint64            `json:"generation"`
+			IssuedAt      CanonicalTime     `json:"issued_at"`
+			ExpiresAt     CanonicalTime     `json:"expires_at"`
+			ProxyCore     string            `json:"proxy_core"`
+			Transport     Transport         `json:"transport"`
+			WireGuard     WireGuard         `json:"wireguard"`
+			Policy        *Policy           `json:"policy"`
+			Mesh          *pathmanager.Spec `json:"mesh,omitempty"`
+		}{c.SchemaVersion, c.ConfigID, c.NetworkID, c.DeviceID, c.Generation, c.IssuedAt, c.ExpiresAt, c.ProxyCore, c.Transport, c.WireGuard, c.Policy, c.Mesh}
 		return json.Marshal(payload)
 	}
 	payload := struct {
@@ -417,6 +447,12 @@ func Compile(config Config) (model.Config, error) {
 			PacketEncoding: model.PacketEncodingXUDP,
 			LocalPort:      config.Transport.Loopback.Port,
 		},
+	}
+	if config.Mesh != nil {
+		if compiled.WireGuard.MTU > 1280 {
+			compiled.WireGuard.MTU = 1280
+		}
+		compiled.Mesh = &pathmanager.Config{NetworkID: config.NetworkID, DeviceID: config.DeviceID, GatewayPublicKey: peer.PublicKey, Interface: config.WireGuard.InterfaceName, OverlayCIDR: peer.AllowedIPs[0], ExpiresAt: config.ExpiresAt.Time, LANListen: "0.0.0.0:0", Peers: append([]pathmanager.Peer(nil), config.Mesh.Peers...)}
 	}
 	if err := compiled.Validate(); err != nil {
 		return model.Config{}, err

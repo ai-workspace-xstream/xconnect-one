@@ -70,6 +70,8 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 		return fault.New(fault.CodeInvalidInput, "expected register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, or policy", nil)
 	}
 	switch args[0] {
+	case "path-manager":
+		return overlayruntime.RunPathManager(ctx, args[1:])
 	case "register":
 		return runRegister(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "join":
