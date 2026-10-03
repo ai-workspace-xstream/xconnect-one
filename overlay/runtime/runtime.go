@@ -6,6 +6,7 @@ import (
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/pathmanager"
 )
 
 type ApplyRequest struct {
@@ -20,14 +21,15 @@ type ApplyResult struct {
 }
 
 type Status struct {
-	Available      bool   `json:"available"`
-	Applied        bool   `json:"applied"`
-	ManagedRuntime bool   `json:"managed_runtime"`
-	RuntimeVersion string `json:"runtime_version,omitempty"`
-	Revision       string `json:"revision,omitempty"`
-	CoreID         string `json:"core_id,omitempty"`
-	AdapterID      string `json:"adapter_id,omitempty"`
-	Interface      string `json:"interface,omitempty"`
+	Paths          []pathmanager.PeerStatus `json:"paths,omitempty"`
+	Available      bool                     `json:"available"`
+	Applied        bool                     `json:"applied"`
+	ManagedRuntime bool                     `json:"managed_runtime"`
+	RuntimeVersion string                   `json:"runtime_version,omitempty"`
+	Revision       string                   `json:"revision,omitempty"`
+	CoreID         string                   `json:"core_id,omitempty"`
+	AdapterID      string                   `json:"adapter_id,omitempty"`
+	Interface      string                   `json:"interface,omitempty"`
 }
 
 type Diagnostic struct {
