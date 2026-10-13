@@ -37,8 +37,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${bin_path} sync --watch --interval=60s --state-dir ${s_dir}
-Restart=on-failure
+User=root
+Group=root
+ExecStart=${bin_path} sync --watch --interval=15s --state-dir ${s_dir}
+Restart=always
 RestartSec=10
 NoNewPrivileges=true
 ProtectSystem=full

@@ -28,6 +28,8 @@ import (
 
 const defaultAccountsServer = "https://accounts.svc.plus"
 
+const controlPlaneRequestTimeout = 30 * time.Second
+
 type runtimeFactory func(stateDirectory string) overlayruntime.Interface
 type credentialFactory func(stateDirectory string) credential.Store
 
@@ -66,6 +68,14 @@ func runWithRuntimeFactory(ctx context.Context, args []string, stdout, stderr io
 }
 
 func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if httpClient.Timeout == 0 {
+		boundedClient := *httpClient
+		boundedClient.Timeout = controlPlaneRequestTimeout
+		httpClient = &boundedClient
+	}
 	if len(args) == 0 {
 		return fault.New(fault.CodeInvalidInput, "expected register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, or policy", nil)
 	}
