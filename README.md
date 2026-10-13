@@ -322,9 +322,11 @@ owned-resource cleanup. Never edit generated files while the runtime is active.
   firewall or verify gateway ACL enforcement. Gateway enforcement remains an
   external requirement; a policy-bound ACK is not proof that ACLs are active.
 - Signature expiry is checked when fetching. Cached `up` is disabled; use
-  `sync` to fetch and verify configuration. No background process refreshes
-  configuration, stops an expired tunnel, retries sync, or supervises Xray.
-  Arrange refresh and revocation enforcement operationally.
+  `sync` to fetch and verify configuration. The Linux systemd watcher and the
+  macOS LaunchDaemon periodically sync, retry transient failures, and rebuild
+  an unhealthy owned runtime. Linux `one join` enables the watcher when its
+  systemd unit is installed; macOS uses `scripts/setup-xconnect-one-macos.sh`.
+  Revocation still requires a successful control-plane sync.
 - Runtime apply rollback covers local activation failures. A later ACK or
   state-persistence failure can leave a newly active runtime with older saved
   state; do not interpret every failed sync as a stopped tunnel. Inspect status

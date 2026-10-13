@@ -120,9 +120,25 @@ if [[ "$os" == "Linux" ]]; then
   else
     echo "xconnect-one-install: warning: cannot write to $unit_file without sudo, skipping service registration" >&2
   fi
+  if command -v systemctl >/dev/null 2>&1; then
+    state_present=false
+    if [[ $(id -u) == 0 ]]; then
+      [[ -f "${state_dir}/state.json" ]] && state_present=true
+    elif sudo test -f "${state_dir}/state.json"; then
+      state_present=true
+    fi
+    if [[ "$state_present" == true ]]; then
+      if [[ $(id -u) == 0 ]]; then
+        systemctl enable --now xconnect-one-sync.service
+      else
+        sudo systemctl enable --now xconnect-one-sync.service
+      fi
+    else
+      echo "XConnect One is not enrolled yet; the recovery service will be enabled after join."
+    fi
+  fi
   echo ""
   echo "XConnect One systemd service commands:"
-  echo "  Start and enable: sudo systemctl enable --now xconnect-one-sync.service"
   echo "  Check status:     sudo systemctl status xconnect-one-sync.service"
   echo "  Stop and disable: sudo systemctl disable --now xconnect-one-sync.service"
 fi
