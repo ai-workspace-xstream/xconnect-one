@@ -36,7 +36,7 @@ try {
 
   # Register scheduled task to run as SYSTEM at startup
   $taskName = 'XConnectOneSync'
-  $taskAction = "`"$targetExe`" sync --watch --interval=60s --state-dir `"$stateDir`""
+  $taskAction = "`"$targetExe`" sync --watch --interval=15s --state-dir `"$stateDir`""
   Write-Output ("registering scheduled task {0}..." -f $taskName)
   & schtasks.exe /create /tn $taskName /tr $taskAction /sc onstart /ru "SYSTEM" /rl HIGHEST /f | Out-Null
   Write-Output ("registered scheduled task {0} to run as SYSTEM at startup" -f $taskName)

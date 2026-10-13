@@ -5,8 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/xconnect sync --watch --interval=60s --state-dir /var/lib/xconnect-one
-Restart=on-failure
+User=root
+Group=root
+ExecStart=/usr/local/bin/xconnect sync --watch --interval=15s --state-dir /var/lib/xconnect-one
+Restart=always
 RestartSec=10
 NoNewPrivileges=true
 ProtectSystem=full
