@@ -226,6 +226,11 @@ join() {
   sudo "$CLI_PATH" status --state-dir "$STATE_DIR"
   echo '[4/4] diagnose'
   sudo "$CLI_PATH" diagnose --state-dir "$STATE_DIR"
+  if [[ "$(uname -s)" == Linux ]] && command -v systemctl >/dev/null 2>&1 && \
+    systemctl cat xconnect-one-sync.service >/dev/null 2>&1; then
+    echo '[auto-recovery] enabling systemd watcher'
+    sudo systemctl enable --now xconnect-one-sync.service
+  fi
   echo 'PASS: XConnect One enrolled and local runtime applied.'
 }
 
