@@ -42,7 +42,7 @@ Usage:
   one down [--state-dir DIR]
 
 Environment:
-  XCONNECT_BIN          trusted xconnect binary path
+  XCONNECT_BIN          trusted XConnect One CLI path
   XCONNECT_GATEWAY_BIN  trusted xconnect-gateway binary path
   XCONNECT_CONTROLLER   Accounts controller URL for gateway-init
   XCONNECT_STATE_DIR    One-owned state directory
@@ -78,9 +78,10 @@ find_tool() {
 
 resolve_cli() {
   if [[ -z "$CLI_PATH" ]]; then
-    CLI_PATH="$(find_tool xconnect)"
+    CLI_PATH="$(find_tool xconnect-one)"
+    [[ -n "$CLI_PATH" ]] || CLI_PATH="$(find_tool xconnect)"
   fi
-  [[ -x "$CLI_PATH" ]] || die "xconnect binary not found; set XCONNECT_BIN"
+  [[ -x "$CLI_PATH" ]] || die "XConnect One CLI not found; set XCONNECT_BIN"
 }
 
 resolve_gateway_cli() {
