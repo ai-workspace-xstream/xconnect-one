@@ -26,7 +26,16 @@ import (
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/usecase"
 )
 
-const defaultAccountsServer = "https://accounts.svc.plus"
+const (
+	defaultAccountsServer = "https://accounts.svc.plus"
+	defaultVersion        = "v0.1.18"
+)
+
+var (
+	version   = defaultVersion
+	gitCommit = "dev"
+	buildDate = ""
+)
 
 type runtimeFactory func(stateDirectory string) overlayruntime.Interface
 type credentialFactory func(stateDirectory string) credential.Store
@@ -66,10 +75,22 @@ func runWithRuntimeFactory(ctx context.Context, args []string, stdout, stderr io
 }
 
 func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
-	if len(args) == 0 {
-		return fault.New(fault.CodeInvalidInput, "expected login, logout, gateway, register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, or policy", nil)
+	// Strip out non-positional global flags like --state-dir if passed ahead or trailing
+	filteredArgs := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-v" || arg == "--version" || arg == "version" {
+			return runVersion(args[i+1:], stdout, stderr)
+		}
+		filteredArgs = append(filteredArgs, arg)
 	}
-	switch args[0] {
+
+	if len(filteredArgs) == 0 {
+		return fault.New(fault.CodeInvalidInput, "expected login, logout, gateway, register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, policy, or version", nil)
+	}
+	switch filteredArgs[0] {
+	case "version":
+		return runVersion(filteredArgs[1:], stdout, stderr)
 	case "login":
 		return runLogin(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "logout":
@@ -85,7 +106,7 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 	case "sync":
 		return runSync(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "up":
-		return runUp(ctx, args[1:], stdout, stderr, newRuntime)
+		return runUpWithDependencies(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "down":
 		return runDown(ctx, args[1:], stdout, stderr, newRuntime)
 	case "leave":
@@ -105,6 +126,25 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 	default:
 		return fault.New(fault.CodeInvalidInput, "unknown command", nil)
 	}
+}
+
+func runVersion(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("xconnect version", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	short := flags.Bool("short", false, "print only the version string")
+	if err := flags.Parse(args); err != nil {
+		return fault.New(fault.CodeInvalidInput, "parse version arguments", err)
+	}
+	if *short {
+		fmt.Fprintln(stdout, version)
+		return nil
+	}
+	if gitCommit != "" && gitCommit != "dev" {
+		fmt.Fprintf(stdout, "xconnect-one %s (%s, %s/%s)\n", version, gitCommit, runtime.GOOS, runtime.GOARCH)
+	} else {
+		fmt.Fprintf(stdout, "xconnect-one %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
+	}
+	return nil
 }
 
 func runRegister(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
@@ -332,12 +372,18 @@ func runDown(ctx context.Context, args []string, stdout, stderr io.Writer, newRu
 	flags := flag.NewFlagSet("xconnect down", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
+	logout := flags.Bool("logout", false, "also clear local user login session after stopping the tunnel")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "parse down arguments", err)
 	}
 	result, err := usecase.Down(ctx, state.NewStore(*stateDirectory), newRuntime(*stateDirectory))
 	if err != nil {
 		return err
+	}
+	if *logout {
+		if delErr := credential.DeleteUserSession(*stateDirectory); delErr != nil {
+			return delErr
+		}
 	}
 	return writeJSON(stdout, result)
 }

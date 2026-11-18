@@ -171,7 +171,8 @@ func TestLoginLogoutGatewayFlow(t *testing.T) {
 
 	fakeRuntime := &overlayruntime.Fake{}
 	newRuntime := func(dir string) overlayruntime.Interface { return fakeRuntime }
-	newCreds := func(dir string) credential.Store { return credential.NewFileStore(dir) }
+	memCreds := &credential.MemoryStore{}
+	newCreds := func(dir string) credential.Store { return memCreds }
 
 	// 1. Login with password stdin
 	stdinBuffer := bytes.NewBufferString("correct-pass\n")
@@ -238,5 +239,95 @@ func TestLoginLogoutGatewayFlow(t *testing.T) {
 	}, &stdout, &stderr, server.Client(), newRuntime, newCreds)
 	if err != nil || !strings.Contains(stdout.String(), "Not logged in") {
 		t.Fatalf("expected not logged in after logout: %s", stdout.String())
+	}
+}
+
+func TestLoginWithMFATicketFlow(t *testing.T) {
+	stateDir := t.TempDir()
+	var mfaVerifyCalled bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"message":      "mfa required",
+				"mfa_required": true,
+				"mfa_ticket":   "ticket-12345",
+			})
+		case "/api/auth/mfa/verify":
+			mfaVerifyCalled = true
+			var req map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req["mfa_ticket"] != "ticket-12345" || req["totpCode"] != "654321" {
+				http.Error(w, `{"error":"invalid_mfa"}`, http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "jwt-mfa-token",
+				"user": map[string]any{
+					"id":    "user-mfa-1",
+					"email": "mfa@example.test",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	err := loginCredentials(context.Background(), server.URL, "mfa@example.test", "secret", "654321", stateDir, &stdout, &stderr, server.Client())
+	if err != nil {
+		t.Fatalf("loginCredentials with MFA failed: %v stderr=%s", err, stderr.String())
+	}
+	if !mfaVerifyCalled {
+		t.Fatal("expected /api/auth/mfa/verify to be called")
+	}
+	if !strings.Contains(stdout.String(), "Login successful! Logged in as mfa@example.test") {
+		t.Fatalf("unexpected stdout: %s", stdout.String())
+	}
+}
+
+func TestMatchOrSelectGatewayFourTier(t *testing.T) {
+	gws := []controlplane.GatewayEndpoint{
+		{
+			NetworkID:           "net-ph-xconnect",
+			GatewayID:           "ph-xconnect-gateway-01",
+			EndpointHost:        "ph-xconnect-gateway-01.svc.plus",
+			TransportServerName: "ph-xconnect-gateway-01.svc.plus",
+			RuntimeHealthy:      true,
+		},
+		{
+			NetworkID:           "net-tw-xconnect",
+			GatewayID:           "tw-xconnect-gateway-01",
+			EndpointHost:        "tw-xconnect-gateway-01.svc.plus",
+			TransportServerName: "tw-xconnect-gateway-01.svc.plus",
+			RuntimeHealthy:      false,
+		},
+	}
+
+	// 1. Explicit match by GatewayID
+	var stderr bytes.Buffer
+	gw, err := matchOrSelectGateway(gws, "tw-xconnect-gateway-01", strings.NewReader(""), &stderr)
+	if err != nil || gw.GatewayID != "tw-xconnect-gateway-01" {
+		t.Fatalf("expected match by gateway ID, got %+v err=%v", gw, err)
+	}
+
+	// 2. Explicit match by EndpointHost
+	gw, err = matchOrSelectGateway(gws, "ph-xconnect-gateway-01.svc.plus", strings.NewReader(""), &stderr)
+	if err != nil || gw.GatewayID != "ph-xconnect-gateway-01" {
+		t.Fatalf("expected match by endpoint host, got %+v err=%v", gw, err)
+	}
+
+	// 3. Single gateway auto-select
+	gw, err = matchOrSelectGateway(gws[:1], "", strings.NewReader(""), &stderr)
+	if err != nil || gw.GatewayID != "ph-xconnect-gateway-01" {
+		t.Fatalf("expected single gateway auto-select, got %+v err=%v", gw, err)
+	}
+
+	// 4. Non-TTY multiple gateways without --gateway returns actionable error
+	_, err = matchOrSelectGateway(gws, "", strings.NewReader(""), &stderr)
+	if err == nil || !strings.Contains(err.Error(), "pass --gateway") {
+		t.Fatalf("expected error prompting --gateway, got %v", err)
 	}
 }

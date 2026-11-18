@@ -10,7 +10,8 @@ import (
 
 type GatewayEndpoint struct {
 	NetworkID           string     `json:"network_id"`
-	NetworkDisplayName  string     `json:"network_display_name"`
+	NetworkDisplayName  string     `json:"network_display_name,omitempty"`
+	CIDR                string     `json:"cidr,omitempty"`
 	GatewayID           string     `json:"gateway_id"`
 	DisplayName         string     `json:"display_name"`
 	EndpointHost        string     `json:"gateway_endpoint_host"`
