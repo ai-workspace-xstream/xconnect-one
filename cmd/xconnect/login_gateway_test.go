@@ -171,7 +171,8 @@ func TestLoginLogoutGatewayFlow(t *testing.T) {
 
 	fakeRuntime := &overlayruntime.Fake{}
 	newRuntime := func(dir string) overlayruntime.Interface { return fakeRuntime }
-	newCreds := func(dir string) credential.Store { return credential.NewFileStore(dir) }
+	memCreds := &credential.MemoryStore{}
+	newCreds := func(dir string) credential.Store { return memCreds }
 
 	// 1. Login with password stdin
 	stdinBuffer := bytes.NewBufferString("correct-pass\n")
