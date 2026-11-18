@@ -9,7 +9,7 @@
   "properties": {
     "protocol_version": { "const": "1" },
     "request_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\r\\n\\u0000]+$" },
-    "method": { "enum": ["negotiate", "join", "sync", "status", "leave", "diagnose"] },
+    "method": { "enum": ["negotiate", "join", "sync", "status", "leave", "diagnose", "login-state", "list-gateways", "select-gateway"] },
     "params": { "type": "object" }
   }
 }

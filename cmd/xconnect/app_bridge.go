@@ -30,7 +30,7 @@ const (
 	bridgeCodeInvalidResult      = "bridge_invalid_result"
 )
 
-var appBridgeMethods = []string{"negotiate", "join", "sync", "status", "leave", "diagnose"}
+var appBridgeMethods = []string{"negotiate", "join", "sync", "status", "leave", "diagnose", "login-state", "list-gateways", "select-gateway"}
 
 type appBridgeRequest struct {
 	ProtocolVersion string          `json:"protocol_version"`
@@ -225,6 +225,27 @@ func appBridgeArgs(method string, rawParams json.RawMessage) ([]string, error) {
 			args = append(args, "--local-only")
 		}
 		return args, nil
+	case "login-state":
+		var params appBridgeStateParams
+		if err := decodeBridgeParams(rawParams, &params); err != nil || !validBridgeStateDir(params.StateDir) {
+			return nil, fmt.Errorf(bridgeCodeInvalidParams)
+		}
+		return []string{"login", "--status", "--json", "--state-dir", params.StateDir}, nil
+	case "list-gateways":
+		var params appBridgeStateParams
+		if err := decodeBridgeParams(rawParams, &params); err != nil || !validBridgeStateDir(params.StateDir) {
+			return nil, fmt.Errorf(bridgeCodeInvalidParams)
+		}
+		return []string{"gateway", "list", "--json", "--state-dir", params.StateDir}, nil
+	case "select-gateway":
+		var params struct {
+			StateDir  string `json:"state_dir"`
+			GatewayID string `json:"gateway_id"`
+		}
+		if err := decodeBridgeParams(rawParams, &params); err != nil || !validBridgeStateDir(params.StateDir) || !validBridgeRequiredText(params.GatewayID) {
+			return nil, fmt.Errorf(bridgeCodeInvalidParams)
+		}
+		return []string{"gateway", "select", params.GatewayID, "--state-dir", params.StateDir}, nil
 	default:
 		return nil, fmt.Errorf(bridgeCodeUnsupportedMethod)
 	}
