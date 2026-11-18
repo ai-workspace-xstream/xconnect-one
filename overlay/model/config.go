@@ -47,6 +47,10 @@ type Network struct {
 	TransportPath       string    `json:"transport_path,omitempty"`
 	TransportMode       string    `json:"transport_mode,omitempty"`
 	TransportHost       string    `json:"transport_host,omitempty"`
+	GatewayFrontend     string    `json:"gateway_frontend,omitempty"`
+	GatewayListenSocket string    `json:"gateway_listen_socket,omitempty"`
+	ConnectionMode      string    `json:"connection_mode,omitempty"`
+	ConfigGeneration    int64     `json:"config_generation,omitempty"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
