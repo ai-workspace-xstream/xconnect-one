@@ -49,6 +49,14 @@ var (
 		Method: "GET",
 		Path:   "/api/overlay/v1/enrollment/policy-artifacts/:generation/:digest",
 	}
+	RouteGateways = RouteTemplate{
+		Method: "GET",
+		Path:   "/api/overlay/v1/gateways",
+	}
+	RouteDevicesEnroll = RouteTemplate{
+		Method: "POST",
+		Path:   "/api/overlay/v1/devices/enroll",
+	}
 )
 
 // ClientOverlayRoutes returns all route templates used by the client when communicating with accounts overlay control plane.
@@ -63,6 +71,8 @@ var ClientOverlayRoutes = []RouteTemplate{
 	RouteRegistrations,
 	RouteRegistrationsExchange,
 	RoutePolicyArtifact,
+	RouteGateways,
+	RouteDevicesEnroll,
 }
 
 // BuildSignedConfigAckPath formats an ack route with the given generation.

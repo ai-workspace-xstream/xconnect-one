@@ -52,8 +52,10 @@ const (
 func ParseConfigContract(value string) (ConfigContract, error) {
 	contract := ConfigContract(strings.ToLower(strings.TrimSpace(value)))
 	switch contract {
-	case ConfigContractAuto, ConfigContractSigned, ConfigContractLegacy:
-		return contract, nil
+	case "", ConfigContractAuto, ConfigContractSigned:
+		return ConfigContractSigned, nil
+	case ConfigContractLegacy:
+		return "", fault.New(fault.CodeConfigDowngradeBlocked, "legacy config contract is removed; use signed config v2", nil)
 	default:
 		return "", fault.New(fault.CodeInvalidInput, "parse config contract", nil)
 	}

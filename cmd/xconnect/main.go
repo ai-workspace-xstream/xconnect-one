@@ -67,9 +67,15 @@ func runWithRuntimeFactory(ctx context.Context, args []string, stdout, stderr io
 
 func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
 	if len(args) == 0 {
-		return fault.New(fault.CodeInvalidInput, "expected register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, or policy", nil)
+		return fault.New(fault.CodeInvalidInput, "expected login, logout, gateway, register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, or policy", nil)
 	}
 	switch args[0] {
+	case "login":
+		return runLogin(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+	case "logout":
+		return runLogout(ctx, args[1:], stdout, stderr)
+	case "gateway", "gateways":
+		return runGateway(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "path-manager":
 		return overlayruntime.RunPathManager(ctx, args[1:])
 	case "register":
