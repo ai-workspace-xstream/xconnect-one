@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 )
@@ -27,7 +28,9 @@ type keychainCommand interface {
 type osKeychainCommand struct{}
 
 func (osKeychainCommand) Run(ctx context.Context, arguments []string, stdin []byte) ([]byte, error) {
-	command := exec.CommandContext(ctx, "/usr/bin/security", arguments...)
+	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	command := exec.CommandContext(cmdCtx, "/usr/bin/security", arguments...)
 	if stdin != nil {
 		command.Stdin = bytes.NewReader(stdin)
 	}

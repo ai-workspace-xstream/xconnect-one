@@ -120,21 +120,22 @@ ping -c 3 10.66.0.1
 ## 五、参数速查
 
 ### `login` 参数
-- `--server`：控制面地址（默认 `https://accounts.svc.plus`）
+- `--server`：控制面地址（默认 `https://accounts.svc.plus`；交互式终端未指定时默认提示并支持回车确认或手动输入）
 - `--email`：登录邮箱（交互模式下可省略）
 - `--password-stdin`：从标准输入读取密码
+- `--show-password`：在终端明文回显密码输入（默认使用 `golang.org/x/term` 隐藏输入）
 - `--totp`：6 位 MFA 动态口令
 - `--web` / `--provider`：通过浏览器 OAuth 登录
-- `--gateway`：登录后立即入网指定网关（支持 ID 或域名）
+- `--gateway`：登录后立即入网指定网关（支持 ID、域名或 URL 如 `https://ph-xconnect-gateway-01.svc.plus`；交互模式下未指定时支持列表/默认网关选择或跳过）
 - `--status`：查看当前登录会话状态
-- `--state-dir`：状态目录（默认 `~/.xconnect-one`）
+- `--state-dir`：状态目录（默认 `~/.xconnect-one`；若目录被 `root` 占用或无写权限，默认安全回退到 `~/.xconnect-one-user`，显式传参时校验权限并给出具体修复提示）
 
 ### `up` 参数
-- `--gateway`：指定或切换目标网关（支持 Gateway ID 或域名）
+- `--gateway`：指定或切换目标网关（支持 Gateway ID、域名或 URL 如 `https://ph-xconnect-gateway-01.svc.plus`）
 - `--bootstrap`：启动前自动检查/安装受管 Xray 运行时
 - `--watch` / `--interval`：持续运行并按周期向控制面同步配置（默认 `1m`）
 - `--device-id` / `--name`：自定义设备 ID 与显示名称
-- `--state-dir`：状态目录
+- `--state-dir`：状态目录（默认 `~/.xconnect-one`，无权限时自动回退到用户级目录）
 
 ### `down` 参数
 - `--logout`：断开隧道后同时清除本地登录会话

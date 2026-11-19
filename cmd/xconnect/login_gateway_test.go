@@ -12,12 +12,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/controlplane"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/credential"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
 	overlayruntime "github.com/ai-workspace-xstream/XConnect-One/overlay/runtime"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/signedconfig"
@@ -81,7 +84,7 @@ func TestLoginLogoutGatewayFlow(t *testing.T) {
 	cfg.Signature.Value = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))
 
 	// Mock accounts server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/auth/login":
 			var req map[string]string
@@ -246,7 +249,7 @@ func TestLoginWithMFATicketFlow(t *testing.T) {
 	stateDir := t.TempDir()
 	var mfaVerifyCalled bool
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/auth/login":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -329,5 +332,612 @@ func TestMatchOrSelectGatewayFourTier(t *testing.T) {
 	_, err = matchOrSelectGateway(gws, "", strings.NewReader(""), &stderr)
 	if err == nil || !strings.Contains(err.Error(), "pass --gateway") {
 		t.Fatalf("expected error prompting --gateway, got %v", err)
+	}
+
+	// 5. Explicit match by full gateway URL (e.g. https://ph-xconnect-gateway-01.svc.plus)
+	gw, err = matchOrSelectGateway(gws, "https://ph-xconnect-gateway-01.svc.plus/", strings.NewReader(""), &stderr)
+	if err != nil || gw.GatewayID != "ph-xconnect-gateway-01" {
+		t.Fatalf("expected match by gateway URL, got %+v err=%v", gw, err)
+	}
+}
+
+func TestReadPasswordHidesInTerminalAndSupportsShowPassword(t *testing.T) {
+	origIsTerminal := isTerminalFD
+	origReadTermPwd := readTerminalPassword
+	t.Cleanup(func() {
+		isTerminalFD = origIsTerminal
+		readTerminalPassword = origReadTermPwd
+	})
+
+	// Case 1: TTY without --show-password uses readTerminalPassword and prints newline to stderr
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pw.Close()
+	defer pr.Close()
+
+	isTerminalFD = func(fd int) bool { return fd == int(pr.Fd()) }
+	var termCalled bool
+	var capturedFD int
+	readTerminalPassword = func(fd int) ([]byte, error) {
+		termCalled = true
+		capturedFD = fd
+		return []byte("hidden-secret"), nil
+	}
+
+	var stderr bytes.Buffer
+	got, err := readPassword(pr, &stderr, false)
+	if err != nil {
+		t.Fatalf("readPassword failed: %v", err)
+	}
+	if !termCalled || capturedFD != int(pr.Fd()) {
+		t.Fatalf("expected term.ReadPassword to be called with fd %d, called=%v fd=%d", pr.Fd(), termCalled, capturedFD)
+	}
+	if got != "hidden-secret" {
+		t.Fatalf("unexpected password %q", got)
+	}
+	if stderr.String() != "\n" {
+		t.Fatalf("expected newline written to stderr after hidden input, got %q", stderr.String())
+	}
+
+	// Case 2: TTY with --show-password=true falls back to visible line read (does not call term.ReadPassword)
+	pr2, pw2, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = pw2.WriteString("visible-secret\n")
+	_ = pw2.Close()
+	defer pr2.Close()
+
+	isTerminalFD = func(fd int) bool { return fd == int(pr2.Fd()) }
+	termCalled = false
+	stderr.Reset()
+	got, err = readPassword(pr2, &stderr, true)
+	if err != nil {
+		t.Fatalf("readPassword with showPassword failed: %v", err)
+	}
+	if termCalled {
+		t.Fatal("expected term.ReadPassword NOT to be called when showPassword=true")
+	}
+	if got != "visible-secret" {
+		t.Fatalf("unexpected visible password %q", got)
+	}
+
+	// Case 3: Non-TTY safely falls back to line read
+	isTerminalFD = func(int) bool { return false }
+	termCalled = false
+	got, err = readPassword(strings.NewReader("piped-secret\r\n"), &stderr, false)
+	if err != nil {
+		t.Fatalf("readPassword non-TTY failed: %v", err)
+	}
+	if termCalled || got != "piped-secret" {
+		t.Fatalf("expected non-TTY fallback, termCalled=%v got=%q", termCalled, got)
+	}
+}
+
+func TestDefaultStateDirectoryFallbackWhenPrimaryUnwritable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permission modes do not restrict directory creation on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses POSIX permission bits")
+	}
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	primary := filepath.Join(homeDir, ".xconnect-one")
+	if err := os.MkdirAll(primary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Writable primary is selected directly
+	selected, gotPrimary, reason := resolveDefaultStateDirectory()
+	if selected != primary || gotPrimary != primary || reason != "" {
+		t.Fatalf("expected primary %q without fallback, got selected=%q primary=%q reason=%q", primary, selected, gotPrimary, reason)
+	}
+
+	// Make primary read-only -> should safely fall back to ~/.xconnect-one-user
+	if err := os.Chmod(primary, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(primary, 0o700) })
+
+	selected, gotPrimary, reason = resolveDefaultStateDirectory()
+	wantFallback := filepath.Join(homeDir, ".xconnect-one-user")
+	if selected != wantFallback || gotPrimary != primary || reason == "" {
+		t.Fatalf("expected fallback %q with reason, got selected=%q primary=%q reason=%q", wantFallback, selected, gotPrimary, reason)
+	}
+}
+
+func TestLoginRejectsExplicitUnwritableStateDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permission modes do not restrict directory creation on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses POSIX permission bits")
+	}
+
+	roDir := filepath.Join(t.TempDir(), "ro-state")
+	if err := os.MkdirAll(roDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) })
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = pw.WriteString("ignored-pass\n")
+	_ = pw.Close()
+	oldStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = pr.Close()
+	})
+
+	var stdout, stderr bytes.Buffer
+	err = runWithFactories(context.Background(), []string{
+		"login", "--server", "https://accounts.svc.plus", "--email", "user@example.test", "--password-stdin", "--state-dir", roDir,
+	}, &stdout, &stderr, http.DefaultClient, func(string) overlayruntime.Interface { return &overlayruntime.Fake{} }, func(string) credential.Store { return &credential.MemoryStore{} })
+	if fault.Code(err) != fault.CodeCredentialStorage {
+		t.Fatalf("expected CodeCredentialStorage, got code=%q err=%v", fault.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "--state-dir") {
+		t.Fatalf("expected actionable permission denied message, got: %v", err)
+	}
+}
+
+func TestLoginInteractivePromptsServerStateDirPasswordAndGateway(t *testing.T) {
+	origIsTerminal := isTerminalFD
+	origReadTermPwd := readTerminalPassword
+	t.Cleanup(func() {
+		isTerminalFD = origIsTerminal
+		readTerminalPassword = origReadTermPwd
+	})
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	customStateDir := filepath.Join(homeDir, "custom-state")
+
+	now := time.Now().UTC().Truncate(time.Second)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	cfg := signedconfig.Config{
+		SchemaVersion: signedconfig.SchemaVersionV2,
+		ConfigID:      "cfg-interactive",
+		NetworkID:     "net-ph-xconnect",
+		DeviceID:      defaultDeviceID(),
+		Generation:    1,
+		IssuedAt:      signedconfig.CanonicalTime{Time: now.Add(-time.Minute)},
+		ExpiresAt:     signedconfig.CanonicalTime{Time: now.Add(time.Hour)},
+		ProxyCore:     signedconfig.ProxyCoreXray,
+		Transport: signedconfig.Transport{
+			Kind:     signedconfig.TransportVLESS,
+			Loopback: signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830},
+			Remote:   signedconfig.RemoteEndpoint{Host: "ph-xconnect-gateway-01.svc.plus", Port: 443, ServerName: "ph-xconnect-gateway-01.svc.plus"},
+			AuthID:   "11111111-1111-1111-1111-111111111111",
+		},
+		WireGuard: signedconfig.WireGuard{
+			InterfaceName: "xconzero0",
+			Addresses:     []string{"10.77.0.2/32"},
+			MTU:           1280,
+			Peers: []signedconfig.Peer{
+				{
+					GatewayID:                  "ph-xconnect-gateway-01",
+					PublicKey:                  pubKeyB64,
+					AllowedIPs:                 []string{"10.77.0.0/24"},
+					Endpoint:                   signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830},
+					PersistentKeepaliveSeconds: 25,
+				},
+			},
+		},
+		Policy: &signedconfig.Policy{
+			Generation: 9,
+			Digest:     "58941760a9ab4568d2e72a6f34a2cede891d8e678346da8e886d86263e5b780c",
+			Path:       "/api/overlay/v1/enrollment/policy-artifacts/9/58941760a9ab4568d2e72a6f34a2cede891d8e678346da8e886d86263e5b780c",
+			MediaType:  "application/vnd.xconnect.policy.v1+json",
+		},
+		Signature: signedconfig.Signature{Algorithm: signedconfig.SignatureEd25519, KeyID: "key-gw-test"},
+	}
+	payload, err := cfg.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Signature.Value = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/login":
+			var req map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req["identifier"] == "interactive@example.test" && req["password"] == "term-secret-pass" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token": "jwt-interactive-tok",
+					"user":         map[string]any{"id": "u-1", "email": "interactive@example.test"},
+				})
+				return
+			}
+			http.Error(w, `{"message":"bad creds"}`, http.StatusUnauthorized)
+		case "/api/overlay/v1/gateways":
+			_ = json.NewEncoder(w).Encode(controlplane.GatewaysResponse{
+				Gateways: []controlplane.GatewayEndpoint{
+					{
+						NetworkID:           "net-ph-xconnect",
+						GatewayID:           "ph-xconnect-gateway-01",
+						DisplayName:         "PH Gateway",
+						EndpointHost:        "ph-xconnect-gateway-01.svc.plus",
+						EndpointPort:        51820,
+						TransportServerName: "ph-xconnect-gateway-01.svc.plus",
+						RuntimeHealthy:      true,
+					},
+				},
+			})
+		case "/api/overlay/v1/devices/enroll":
+			var req controlplane.DeviceEnrollRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(controlplane.JoinTokenExchangeResponse{
+				EnrollmentToken:  "xenr_" + strings.Repeat("A", 43),
+				TokenType:        "Bearer",
+				ExpiresAt:        now.Add(time.Hour),
+				DeviceCredential: controlplane.DeviceCredential{
+					CredentialID: "xdcid_11111111111111111111111111111111",
+					Credential:   "xdc_11111111111111111111111111111111.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+					IssuedAt:     now,
+					ExpiresAt:    now.Add(24 * time.Hour),
+					Scope:        []string{credential.ScopeSessionMint, credential.ScopeRotate, credential.ScopeDeviceRevoke},
+				},
+				Device:           model.Device{ID: req.DeviceID},
+				Network:          model.Network{ID: req.NetworkID},
+				SigningKeys:      []signedconfig.SigningKey{{KeyID: "key-gw-test", Algorithm: "Ed25519", PublicKey: pubKeyB64, Status: "current", NotBefore: signedconfig.CanonicalTime{Time: now.Add(-time.Hour)}}},
+			})
+		case "/api/overlay/v1/enrollment/signed-config":
+			w.Header().Set("Content-Type", controlplane.SignedConfigV2MediaType)
+			w.Header().Set("Cache-Control", "private, no-store")
+			w.Header().Set("Vary", "Accept")
+			w.Header().Set("ETag", `"cfg-v2"`)
+			_ = json.NewEncoder(w).Encode(cfg)
+		case "/api/overlay/v1/enrollment/signed-config/1/ack":
+			_ = json.NewEncoder(w).Encode(controlplane.SignedConfigAckResponse{Acked: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// Interactive TTY input sequence:
+	// 1. State directory prompt -> customStateDir
+	// 2. Accounts server prompt -> server.URL
+	// 3. Email prompt -> interactive@example.test
+	// 4. Password prompt -> readTerminalPassword returns "term-secret-pass"
+	// 5. Gateway prompt -> "https://ph-xconnect-gateway-01.svc.plus"
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fmt.Fprintf(pw, "%s\n%s\ninteractive@example.test\nhttps://ph-xconnect-gateway-01.svc.plus\n", customStateDir, server.URL)
+	_ = pw.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = pr.Close()
+	})
+
+	isTerminalFD = func(fd int) bool { return fd == int(pr.Fd()) }
+	var termPasswordCalled bool
+	readTerminalPassword = func(fd int) ([]byte, error) {
+		termPasswordCalled = true
+		return []byte("term-secret-pass"), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = runWithFactories(context.Background(), []string{"login"}, &stdout, &stderr, server.Client(),
+		func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+		func(string) credential.Store { return &credential.MemoryStore{} },
+	)
+	if err != nil {
+		t.Fatalf("interactive login failed: %v stderr=%s", err, stderr.String())
+	}
+	if !termPasswordCalled {
+		t.Fatal("expected hidden terminal password reader to be used")
+	}
+	if !strings.Contains(stderr.String(), "Accounts server [https://accounts.svc.plus]:") {
+		t.Fatalf("expected server prompt with default, stderr=%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "State directory [") {
+		t.Fatalf("expected state-dir prompt, stderr=%s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Login successful! Logged in as interactive@example.test") {
+		t.Fatalf("unexpected stdout: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Selected gateway ph-xconnect-gateway-01") {
+		t.Fatalf("expected enrolled gateway output, stdout=%s", stdout.String())
+	}
+	if _, err := credential.LoadUserSession(customStateDir); err != nil {
+		t.Fatalf("expected session saved in custom state dir %q: %v", customStateDir, err)
+	}
+}
+
+func TestLoginAndUpHelpFlagsReturnNil(t *testing.T) {
+	for _, sub := range []string{"login", "join", "up"} {
+		var stdout, stderr bytes.Buffer
+		err := runWithFactories(context.Background(), []string{sub, "--help"}, &stdout, &stderr, http.DefaultClient,
+			func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+			func(string) credential.Store { return &credential.MemoryStore{} },
+		)
+		if err != nil {
+			t.Fatalf("%s --help returned unexpected error: %v", sub, err)
+		}
+		if !strings.Contains(stderr.String(), "-state-dir") || !strings.Contains(stderr.String(), "-gateway") {
+			t.Fatalf("%s --help missing expected flags: %s", sub, stderr.String())
+		}
+		if sub == "login" && (!strings.Contains(stderr.String(), "-show-password") || !strings.Contains(stderr.String(), "-server")) {
+			t.Fatalf("login --help missing -show-password or -server: %s", stderr.String())
+		}
+	}
+}
+
+func TestLoginWithEmptyGatewayListDoesNotShowBrokenOption(t *testing.T) {
+	origIsTerminal := isTerminalFD
+	origReadTermPwd := readTerminalPassword
+	t.Cleanup(func() {
+		isTerminalFD = origIsTerminal
+		readTerminalPassword = origReadTermPwd
+	})
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "jwt-empty-gw-tok",
+				"user":         map[string]any{"id": "u-empty", "email": "empty@example.test"},
+			})
+		case "/api/overlay/v1/gateways":
+			_ = json.NewEncoder(w).Encode(controlplane.GatewaysResponse{Gateways: []controlplane.GatewayEndpoint{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// 1. Interactive login without --gateway when server returns {"gateways":[]}
+	stateDir := t.TempDir()
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = pw.WriteString("empty@example.test\n")
+	_ = pw.Close()
+	oldStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = pr.Close()
+	})
+	isTerminalFD = func(fd int) bool { return fd == int(pr.Fd()) }
+	readTerminalPassword = func(int) ([]byte, error) { return []byte("secret-pass"), nil }
+
+	var stdout, stderr bytes.Buffer
+	err = runWithFactories(context.Background(), []string{
+		"login", "--server", server.URL, "--state-dir", stateDir,
+	}, &stdout, &stderr, server.Client(),
+		func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+		func(string) credential.Store { return &credential.MemoryStore{} },
+	)
+	if err != nil {
+		t.Fatalf("expected interactive login with empty gateways to succeed, got %v stderr=%s", err, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Gateway options:") || strings.Contains(stderr.String(), "Select gateway") {
+		t.Fatalf("must not prompt fake [1] gateway option when server returned empty gateways: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no gateways or networks are currently bound") || !strings.Contains(stderr.String(), "xconnect-one join") {
+		t.Fatalf("expected guidance on stderr, got: %s", stderr.String())
+	}
+	if _, err := credential.LoadUserSession(stateDir); err != nil {
+		t.Fatalf("expected saved session to remain intact: %v", err)
+	}
+
+	// 2. Explicit --gateway when server returns {"gateways":[]} returns clear not_joined guidance
+	isTerminalFD = func(int) bool { return false }
+	stdout.Reset()
+	stderr.Reset()
+	err = runWithFactories(context.Background(), []string{
+		"login", "--server", server.URL, "--email", "empty@example.test", "--password-stdin",
+		"--state-dir", stateDir, "--gateway", "https://ph-xconnect-gateway-01.svc.plus",
+	}, &stdout, &stderr, server.Client(),
+		func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+		func(string) credential.Store { return &credential.MemoryStore{} },
+	)
+	if fault.Code(err) != fault.CodeNotJoined {
+		t.Fatalf("expected CodeNotJoined, got code=%q err=%v", fault.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), "no gateways are bound to your account") || !strings.Contains(err.Error(), "xconnect-one join") {
+		t.Fatalf("expected clear actionable error message, got: %v", err)
+	}
+}
+
+func TestJoinSessionOpensConsolePollsAndEnrollsGateway(t *testing.T) {
+	stateDir := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubKeyB64 := base64.StdEncoding.EncodeToString(pub)
+
+	cfg := signedconfig.Config{
+		SchemaVersion: signedconfig.SchemaVersionV2,
+		ConfigID:      "cfg-ph-enroll",
+		NetworkID:     "net-ph-xconnect",
+		DeviceID:      "ph-device-1",
+		Generation:    1,
+		IssuedAt:      signedconfig.CanonicalTime{Time: now.Add(-time.Minute)},
+		ExpiresAt:     signedconfig.CanonicalTime{Time: now.Add(time.Hour)},
+		ProxyCore:     signedconfig.ProxyCoreXray,
+		Transport: signedconfig.Transport{
+			Kind:     signedconfig.TransportVLESS,
+			Loopback: signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830},
+			Remote: signedconfig.RemoteEndpoint{
+				Host:       "ph-xconnect-gateway-01.svc.plus",
+				Port:       443,
+				ServerName: "ph-xconnect-gateway-01.svc.plus",
+			},
+			AuthID: "11111111-1111-1111-1111-111111111111",
+		},
+		WireGuard: signedconfig.WireGuard{
+			InterfaceName: "xconzero0",
+			Addresses:     []string{"10.77.0.3/32"},
+			MTU:           1280,
+			Peers: []signedconfig.Peer{
+				{
+					GatewayID:                  "ph-xconnect-gateway-01",
+					PublicKey:                  pubKeyB64,
+					AllowedIPs:                 []string{"10.77.0.0/24"},
+					Endpoint:                   signedconfig.Endpoint{Host: "127.0.0.1", Port: 51830},
+					PersistentKeepaliveSeconds: 25,
+				},
+			},
+		},
+		Policy: &signedconfig.Policy{
+			Generation: 9,
+			Digest:     "58941760a9ab4568d2e72a6f34a2cede891d8e678346da8e886d86263e5b780c",
+			Path:       "/api/overlay/v1/enrollment/policy-artifacts/9/58941760a9ab4568d2e72a6f34a2cede891d8e678346da8e886d86263e5b780c",
+			MediaType:  "application/vnd.xconnect.policy.v1+json",
+		},
+		Signature: signedconfig.Signature{
+			Algorithm: signedconfig.SignatureEd25519,
+			KeyID:     "key-ph-test",
+		},
+	}
+	payload, err := cfg.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Signature.Value = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))
+
+	var gatewayCalls int
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/overlay/v1/gateways":
+			gatewayCalls++
+			if gatewayCalls == 1 {
+				_ = json.NewEncoder(w).Encode(controlplane.GatewaysResponse{Gateways: []controlplane.GatewayEndpoint{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(controlplane.GatewaysResponse{
+				Gateways: []controlplane.GatewayEndpoint{
+					{
+						NetworkID:           "net-ph-xconnect",
+						GatewayID:           "ph-xconnect-gateway-01",
+						DisplayName:         "Philippines Gateway 01",
+						EndpointHost:        "ph-xconnect-gateway-01.svc.plus",
+						EndpointPort:        51820,
+						TransportServerName: "ph-xconnect-gateway-01.svc.plus",
+						TransportPort:       443,
+						ConnectionMode:      "wg_vless_l3",
+						RuntimeHealthy:      true,
+					},
+				},
+			})
+		case "/api/overlay/v1/devices/enroll":
+			var req controlplane.DeviceEnrollRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(controlplane.JoinTokenExchangeResponse{
+				EnrollmentToken: "xenr_" + strings.Repeat("A", 43),
+				TokenType:       "Bearer",
+				ExpiresAt:       now.Add(time.Hour),
+				DeviceCredential: controlplane.DeviceCredential{
+					CredentialID: "xdcid_11111111111111111111111111111111",
+					Credential:   "xdc_11111111111111111111111111111111.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+					IssuedAt:     now,
+					ExpiresAt:    now.Add(24 * time.Hour),
+					Scope:        []string{credential.ScopeSessionMint, credential.ScopeRotate, credential.ScopeDeviceRevoke},
+				},
+				Device:  model.Device{ID: req.DeviceID},
+				Network: model.Network{ID: req.NetworkID},
+				SigningKeys: []signedconfig.SigningKey{
+					{
+						KeyID:     "key-ph-test",
+						Algorithm: "Ed25519",
+						PublicKey: pubKeyB64,
+						Status:    "current",
+						NotBefore: signedconfig.CanonicalTime{Time: now.Add(-time.Hour)},
+					},
+				},
+			})
+		case "/api/overlay/v1/enrollment/signed-config":
+			w.Header().Set("Content-Type", controlplane.SignedConfigV2MediaType)
+			w.Header().Set("Cache-Control", "private, no-store")
+			w.Header().Set("Vary", "Accept")
+			w.Header().Set("ETag", `"cfg-v2"`)
+			_ = json.NewEncoder(w).Encode(cfg)
+		case "/api/overlay/v1/enrollment/signed-config/1/ack":
+			_ = json.NewEncoder(w).Encode(controlplane.SignedConfigAckResponse{Acked: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if err := credential.SaveUserSession(stateDir, credential.UserSession{
+		Server:      server.URL,
+		Email:       "156405189@qq.com",
+		UserID:      "u-156405189",
+		AccessToken: "jwt-tok-156",
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var openedURL string
+	origOpenBrowser := openBrowserFunc
+	openBrowserFunc = func(u string) error {
+		openedURL = u
+		return nil
+	}
+	t.Cleanup(func() { openBrowserFunc = origOpenBrowser })
+
+	memCreds := &credential.MemoryStore{}
+	var stdout, stderr bytes.Buffer
+	err = runWithFactories(context.Background(), []string{
+		"join",
+		"--state-dir", stateDir,
+		"--device-id", "ph-device-1",
+		"--gateway", "ph-xconnect-gateway-01",
+		"--network-id", "net-ph-xconnect",
+		"--poll-interval", "20ms",
+		"--wait", "2s",
+	}, &stdout, &stderr, server.Client(),
+		func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+		func(string) credential.Store { return memCreds },
+	)
+	if err != nil {
+		t.Fatalf("join failed: %v stderr=%s", err, stderr.String())
+	}
+	if !strings.HasPrefix(openedURL, "https://console.svc.plus/panel/xconnect-zero") {
+		t.Fatalf("expected console URL to be opened, got %q", openedURL)
+	}
+	if !strings.Contains(openedURL, "network=net-ph-xconnect") || !strings.Contains(openedURL, "gateway=ph-xconnect-gateway-01") {
+		t.Fatalf("expected network and gateway hints in console URL, got %q", openedURL)
+	}
+	if !strings.Contains(stdout.String(), "Joined network net-ph-xconnect via gateway ph-xconnect-gateway-01") ||
+		!strings.Contains(stdout.String(), "xconnect-one up") {
+		t.Fatalf("unexpected join stdout: %s", stdout.String())
+	}
+	rec, err := memCreds.Load(context.Background())
+	if err != nil || rec.NetworkID != "net-ph-xconnect" {
+		t.Fatalf("expected enrolled credential for net-ph-xconnect, got rec=%+v err=%v", rec, err)
 	}
 }

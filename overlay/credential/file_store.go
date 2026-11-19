@@ -123,11 +123,14 @@ func (s *FileStore) Delete(context.Context) error {
 
 func ensurePrivateOwnedDirectory(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
-		return fault.New(fault.CodeCredentialStorage, "create device credential directory", nil)
+		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(filepath.Dir(path), path, "create device credential directory", err), err)
 	}
 	info, err := os.Lstat(path)
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
-		return fault.New(fault.CodeCredentialStorage, "validate device credential directory", nil)
+	if err != nil {
+		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(filepath.Dir(path), path, "validate device credential directory", err), err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
+		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(filepath.Dir(path), path, "validate device credential directory", os.ErrPermission), os.ErrPermission)
 	}
 	return nil
 }

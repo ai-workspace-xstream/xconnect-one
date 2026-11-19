@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/controlplane"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/credential"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
@@ -28,33 +30,56 @@ import (
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/usecase"
 )
 
+var (
+	isTerminalFD         = term.IsTerminal
+	readTerminalPassword = term.ReadPassword
+)
+
 func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
+	defaultStateDir, primaryStateDir, fallbackReason := resolveDefaultStateDirectory()
 	flags := flag.NewFlagSet("xconnect login", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	server := flags.String("server", defaultAccountsServer, "accounts service base URL")
 	email := flags.String("email", "", "user email or username for credential login")
 	passwordStdin := flags.Bool("password-stdin", false, "read password from standard input")
+	showPassword := flags.Bool("show-password", false, "echo password input visibly in terminal (insecure)")
 	totp := flags.String("totp", "", "TOTP 6-digit code for MFA (optional)")
 	web := flags.Bool("web", false, "authenticate via browser OAuth / SSO")
 	provider := flags.String("provider", "google", "OAuth provider for web login (e.g. google, github)")
 	status := flags.Bool("status", false, "display current login session status")
 	asJSON := flags.Bool("json", false, "output login status or response as JSON")
-	gatewayTarget := flags.String("gateway", "", "optional gateway ID or endpoint host to enroll immediately after login")
+	gatewayTarget := flags.String("gateway", "", "optional gateway ID, endpoint host, or URL (e.g. "+defaultKnownGateway+")")
 	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID (used with --gateway)")
 	deviceName := flags.String("name", "", "device display name (used with --gateway)")
-	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
+	stateDirectory := flags.String("state-dir", defaultStateDir, "local XConnect-One state directory")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return fault.New(fault.CodeInvalidInput, "parse login arguments", err)
 	}
+	if flags.NArg() != 0 {
+		return fault.New(fault.CodeInvalidInput, "unexpected positional arguments for login", nil)
+	}
+
+	explicitFlags := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
+
+	*stateDirectory = expandUserPath(*stateDirectory)
 
 	if *status {
 		sess, err := credential.LoadUserSession(*stateDirectory)
-		if err != nil {
+		if errors.Is(err, credential.ErrNotFound) {
 			if *asJSON {
 				return writeJSON(stdout, map[string]any{"logged_in": false})
 			}
 			fmt.Fprintln(stdout, "Not logged in")
 			return nil
+		}
+		if err != nil {
+			return err
 		}
 		if !sess.ExpiresAt.IsZero() && time.Now().UTC().After(sess.ExpiresAt) {
 			if *asJSON {
@@ -76,6 +101,41 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 		return nil
 	}
 
+	interactive := isTerminal(os.Stdin) && !*passwordStdin
+
+	if !explicitFlags["state-dir"] && fallbackReason != "" {
+		fmt.Fprintf(stderr, "Note: default state directory %q is %s; using %q (or pass --state-dir)\n", primaryStateDir, fallbackReason, *stateDirectory)
+	}
+	if !explicitFlags["state-dir"] && interactive {
+		fmt.Fprintf(stderr, "State directory [%s]: ", *stateDirectory)
+		line, err := readLine(os.Stdin)
+		if err != nil {
+			return err
+		}
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			*stateDirectory = expandUserPath(trimmed)
+		}
+	}
+	if err := credential.EnsureWritableStateDir(*stateDirectory); err != nil {
+		return err
+	}
+
+	if !explicitFlags["server"] && interactive {
+		fmt.Fprintf(stderr, "Accounts server [%s]: ", *server)
+		line, err := readLine(os.Stdin)
+		if err != nil {
+			return err
+		}
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			*server = trimmed
+		}
+	}
+	normalizedServer, err := normalizeServerURL(*server)
+	if err != nil {
+		return err
+	}
+	*server = normalizedServer
+
 	if *web {
 		if err := loginWeb(ctx, *server, *provider, *stateDirectory, stdout, stderr, httpClient); err != nil {
 			return err
@@ -87,7 +147,7 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 				return fault.New(fault.CodeInvalidInput, "login requires --email (or --web / --status)", nil)
 			}
 			fmt.Fprintf(stderr, "Email: ")
-			line, err := readPassword(os.Stdin)
+			line, err := readLine(os.Stdin)
 			if err != nil {
 				return err
 			}
@@ -106,14 +166,14 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 			password = strings.TrimSpace(string(raw))
 		} else {
 			fmt.Fprintf(stderr, "Password: ")
-			pwd, err := readPassword(os.Stdin)
+			pwd, err := readPassword(os.Stdin, stderr, *showPassword)
 			if err != nil {
 				return err
 			}
 			password = pwd
 		}
 
-		if err := loginCredentials(ctx, *server, trimmedEmail, password, *totp, *stateDirectory, stdout, stderr, httpClient); err != nil {
+		if err := loginCredentialsWithPrompt(ctx, *server, trimmedEmail, password, *totp, *stateDirectory, *showPassword, !*passwordStdin, stdout, stderr, httpClient); err != nil {
 			return err
 		}
 	}
@@ -128,8 +188,33 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 			return err
 		}
 		fmt.Fprintf(stdout, "Selected gateway %s (%s) on network %s\n", enrolled.Gateway.GatewayID, enrolled.Gateway.EndpointHost, enrolled.Gateway.NetworkID)
+	} else if interactive {
+		session, err := credential.LoadUserSession(*stateDirectory)
+		if err != nil {
+			return err
+		}
+		enrolled, skipped, err := promptAndEnrollGatewayOnLogin(ctx, session, *stateDirectory, *deviceID, *deviceName, os.Stdin, stderr, httpClient, newCredentials)
+		if err != nil {
+			return err
+		}
+		if !skipped {
+			fmt.Fprintf(stdout, "Selected gateway %s (%s) on network %s\n", enrolled.Gateway.GatewayID, enrolled.Gateway.EndpointHost, enrolled.Gateway.NetworkID)
+		}
 	}
 	return nil
+}
+
+func normalizeServerURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fault.New(fault.CodeInvalidInput, "server URL cannot be empty", nil)
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fault.New(fault.CodeInvalidInput, fmt.Sprintf("invalid server URL %q (expected http:// or https:// URL)", trimmed), err)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String(), nil
 }
 
 func loginWeb(ctx context.Context, server, provider, stateDir string, stdout, stderr io.Writer, httpClient *http.Client) error {
@@ -243,6 +328,10 @@ func loginWeb(ctx context.Context, server, provider, stateDir string, stdout, st
 }
 
 func loginCredentials(ctx context.Context, server, email, password, totpCode, stateDir string, stdout, stderr io.Writer, httpClient *http.Client) error {
+	return loginCredentialsWithPrompt(ctx, server, email, password, totpCode, stateDir, false, true, stdout, stderr, httpClient)
+}
+
+func loginCredentialsWithPrompt(ctx context.Context, server, email, password, totpCode, stateDir string, showPassword, allowMFAPrompt bool, stdout, stderr io.Writer, httpClient *http.Client) error {
 	loginURL := fmt.Sprintf("%s/api/auth/login", strings.TrimRight(server, "/"))
 	payload := map[string]string{
 		"identifier": email,
@@ -277,12 +366,18 @@ func loginCredentials(ctx context.Context, server, email, password, totpCode, st
 
 	if loginResp.MFARequired {
 		if totpCode == "" {
+			if !allowMFAPrompt {
+				return fault.New(fault.CodeAuthenticationFailed, "MFA required; pass --totp <code>", nil)
+			}
 			fmt.Fprintf(stderr, "MFA required. Enter TOTP code: ")
-			code, err := readPassword(os.Stdin)
+			code, err := readPassword(os.Stdin, stderr, showPassword)
 			if err != nil {
 				return err
 			}
-			totpCode = code
+			totpCode = strings.TrimSpace(code)
+			if totpCode == "" {
+				return fault.New(fault.CodeAuthenticationFailed, "MFA required; TOTP code cannot be empty", nil)
+			}
 		}
 		ticket := strings.TrimSpace(loginResp.MFATicket)
 		if ticket == "" {
@@ -358,8 +453,12 @@ func runLogout(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	flags.SetOutput(stderr)
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return fault.New(fault.CodeInvalidInput, "parse logout arguments", err)
 	}
+	*stateDirectory = expandUserPath(*stateDirectory)
 	if err := credential.DeleteUserSession(*stateDirectory); err != nil {
 		return err
 	}
@@ -387,10 +486,17 @@ func runGatewayList(ctx context.Context, args []string, stdout, stderr io.Writer
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
 	asJSON := flags.Bool("json", false, "output gateways as JSON")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return fault.New(fault.CodeInvalidInput, "parse gateway list arguments", err)
 	}
+	*stateDirectory = expandUserPath(*stateDirectory)
 	session, err := credential.LoadUserSession(*stateDirectory)
 	if err != nil {
+		if fault.Code(err) == fault.CodeCredentialStorage {
+			return err
+		}
 		return fault.New(fault.CodeAuthenticationFailed, "please login first using 'xconnect login'", err)
 	}
 	client, err := controlplane.New(session.Server, session.AccessToken, httpClient)
@@ -442,12 +548,22 @@ func runGatewaySelect(ctx context.Context, args []string, stdout, stderr io.Writ
 	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID")
 	deviceName := flags.String("name", "", "device display name")
 	up := flags.Bool("up", false, "bring up tunnel interface after enrolling")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 1 {
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return fault.New(fault.CodeInvalidInput, "parse gateway select arguments", err)
+	}
+	if flags.NArg() != 1 {
 		return fault.New(fault.CodeInvalidInput, "gateway select requires exactly one <gateway-id>", nil)
 	}
+	*stateDirectory = expandUserPath(*stateDirectory)
 	selectedGateway := flags.Arg(0)
 	session, err := credential.LoadUserSession(*stateDirectory)
 	if err != nil {
+		if fault.Code(err) == fault.CodeCredentialStorage {
+			return err
+		}
 		return fault.New(fault.CodeAuthenticationFailed, "please login first using 'xconnect login'", err)
 	}
 	enrolled, err := resolveAndEnrollGateway(ctx, session, *stateDirectory, *deviceID, *deviceName, selectedGateway, stderr, httpClient, newCredentials)
@@ -503,7 +619,37 @@ func resolveAndEnrollGateway(
 	if err != nil {
 		return enrolledGatewayResult{}, err
 	}
-	targetGateway, err := matchOrSelectGateway(gateways, gatewaySelector, os.Stdin, stderr)
+	if len(gateways) == 0 {
+		if strings.TrimSpace(gatewaySelector) != "" {
+			return enrolledGatewayResult{}, fault.New(
+				fault.CodeNotJoined,
+				fmt.Sprintf("no gateways are bound to your account on %s; cannot enroll gateway %q yet (run 'xconnect-one join' to bind a gateway network in the console first)", session.Server, strings.TrimSpace(gatewaySelector)),
+				nil,
+			)
+		}
+		return enrolledGatewayResult{}, fault.New(
+			fault.CodeNotJoined,
+			fmt.Sprintf("no gateways are bound to your account on %s (run 'xconnect-one join' to bind a gateway network in the console first)", session.Server),
+			nil,
+		)
+	}
+	return enrollResolvedGateway(ctx, client, session, stateDirectory, deviceID, deviceName, gateways, gatewaySelector, os.Stdin, stderr, newCredentials)
+}
+
+func enrollResolvedGateway(
+	ctx context.Context,
+	client *controlplane.Client,
+	session credential.UserSession,
+	stateDirectory string,
+	deviceID string,
+	deviceName string,
+	gateways []controlplane.GatewayEndpoint,
+	gatewaySelector string,
+	stdin io.Reader,
+	stderr io.Writer,
+	newCredentials credentialFactory,
+) (enrolledGatewayResult, error) {
+	targetGateway, err := matchOrSelectGateway(gateways, gatewaySelector, stdin, stderr)
 	if err != nil {
 		return enrolledGatewayResult{}, err
 	}
@@ -593,34 +739,141 @@ func resolveAndEnrollGateway(
 	}, nil
 }
 
+func promptAndEnrollGatewayOnLogin(
+	ctx context.Context,
+	session credential.UserSession,
+	stateDirectory string,
+	deviceID string,
+	deviceName string,
+	stdin io.Reader,
+	stderr io.Writer,
+	httpClient *http.Client,
+	newCredentials credentialFactory,
+) (enrolledGatewayResult, bool, error) {
+	client, err := controlplane.New(session.Server, session.AccessToken, httpClient)
+	if err != nil {
+		return enrolledGatewayResult{}, false, err
+	}
+	gateways, listErr := client.ListGateways(ctx)
+	if listErr == nil && len(gateways) > 0 {
+		defaultIdx := preferredGatewayIndex(gateways)
+		fmt.Fprintln(stderr, "Available gateways:")
+		for i, gw := range gateways {
+			host := gw.EndpointHost
+			if host == "" {
+				host = gw.TransportServerName
+			}
+			fmt.Fprintf(stderr, "  [%d] %s (%s, %s)\n", i+1, gw.GatewayID, host, gw.NetworkID)
+		}
+		fmt.Fprintln(stderr, "  [s] Skip (select later on 'xconnect-one up')")
+		fmt.Fprintf(stderr, "Select gateway [%d] (or enter gateway ID/URL, 's' to skip): ", defaultIdx+1)
+		line, err := readLine(stdin)
+		if err != nil {
+			return enrolledGatewayResult{}, false, err
+		}
+		choice := strings.TrimSpace(line)
+		if isSkipChoice(choice) {
+			fmt.Fprintln(stderr, "Skipped gateway selection; run 'xconnect-one up' to select and connect later.")
+			return enrolledGatewayResult{}, true, nil
+		}
+		selector := ""
+		if choice == "" {
+			selector = gateways[defaultIdx].GatewayID
+		} else if idx, convErr := strconv.Atoi(choice); convErr == nil {
+			if idx < 1 || idx > len(gateways) {
+				return enrolledGatewayResult{}, false, fault.New(fault.CodeInvalidInput, fmt.Sprintf("invalid gateway selection %q", choice), nil)
+			}
+			selector = gateways[idx-1].GatewayID
+		} else {
+			selector = choice
+		}
+		enrolled, err := enrollResolvedGateway(ctx, client, session, stateDirectory, deviceID, deviceName, gateways, selector, stdin, stderr, newCredentials)
+		return enrolled, false, err
+	}
+
+	if listErr == nil && len(gateways) == 0 {
+		fmt.Fprintf(stderr, "Note: no gateways or networks are currently bound to your account on %s yet.\n", session.Server)
+		fmt.Fprintln(stderr, "Your login session has been saved. Next steps:")
+		fmt.Fprintln(stderr, "  1. xconnect-one join   (opens the console to bind a gateway/network, e.g. ph-xconnect-gateway-01 / net-ph-xconnect)")
+		fmt.Fprintln(stderr, "  2. xconnect-one up     (connect to the private network)")
+		return enrolledGatewayResult{}, true, nil
+	}
+
+	fmt.Fprintf(stderr, "Note: could not fetch gateway list from server (%v).\n", listErr)
+	fmt.Fprintln(stderr, "Gateway options:")
+	fmt.Fprintf(stderr, "  [1] %s\n", defaultKnownGateway)
+	fmt.Fprintln(stderr, "  [s] Skip (select later on 'xconnect-one up')")
+	fmt.Fprintf(stderr, "Select gateway [s] (or enter 1 / gateway ID / URL): ")
+	line, err := readLine(stdin)
+	if err != nil {
+		return enrolledGatewayResult{}, false, err
+	}
+	choice := strings.TrimSpace(line)
+	if choice == "" || isSkipChoice(choice) {
+		fmt.Fprintln(stderr, "Skipped gateway selection; run 'xconnect-one up' to select and connect later.")
+		return enrolledGatewayResult{}, true, nil
+	}
+	selector := choice
+	if choice == "1" {
+		selector = defaultKnownGateway
+	}
+	enrolled, err := resolveAndEnrollGateway(ctx, session, stateDirectory, deviceID, deviceName, selector, stderr, httpClient, newCredentials)
+	return enrolled, false, err
+}
+
+func isSkipChoice(choice string) bool {
+	return strings.EqualFold(choice, "s") || strings.EqualFold(choice, "skip") || strings.EqualFold(choice, "none")
+}
+
+func preferredGatewayIndex(gateways []controlplane.GatewayEndpoint) int {
+	for i, gw := range gateways {
+		if gw.RuntimeHealthy {
+			return i
+		}
+	}
+	return 0
+}
+
+func normalizeGatewaySelector(selector string) string {
+	trimmed := strings.TrimSpace(selector)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.Contains(trimmed, "://") {
+		if parsed, err := url.Parse(trimmed); err == nil && parsed.Hostname() != "" {
+			return parsed.Hostname()
+		}
+	}
+	return strings.TrimRight(trimmed, "/")
+}
+
 func matchOrSelectGateway(gateways []controlplane.GatewayEndpoint, selector string, stdin io.Reader, stderr io.Writer) (*controlplane.GatewayEndpoint, error) {
 	if len(gateways) == 0 {
 		return nil, fault.New(fault.CodeNotJoined, "no gateways available for your account", nil)
 	}
-	trimmed := strings.TrimSpace(selector)
+	trimmed := normalizeGatewaySelector(selector)
 	if trimmed != "" {
 		for i := range gateways {
 			gw := &gateways[i]
+			endpointWithPort := ""
+			if gw.EndpointHost != "" && gw.EndpointPort > 0 {
+				endpointWithPort = fmt.Sprintf("%s:%d", gw.EndpointHost, gw.EndpointPort)
+			}
 			if strings.EqualFold(gw.GatewayID, trimmed) ||
 				strings.EqualFold(gw.EndpointHost, trimmed) ||
-				strings.EqualFold(gw.TransportServerName, trimmed) {
+				strings.EqualFold(gw.TransportServerName, trimmed) ||
+				(endpointWithPort != "" && strings.EqualFold(endpointWithPort, trimmed)) {
 				return gw, nil
 			}
 		}
-		return nil, fault.New(fault.CodeInvalidInput, fmt.Sprintf("gateway %q not found in available gateways", trimmed), nil)
+		return nil, fault.New(fault.CodeInvalidInput, fmt.Sprintf("gateway %q not found in available gateways", strings.TrimSpace(selector)), nil)
 	}
 	if len(gateways) == 1 {
 		return &gateways[0], nil
 	}
 
 	// Multiple gateways available without explicit --gateway
-	defaultIdx := 0
-	for i, gw := range gateways {
-		if gw.RuntimeHealthy {
-			defaultIdx = i
-			break
-		}
-	}
+	defaultIdx := preferredGatewayIndex(gateways)
 
 	stdinFile, ok := stdin.(*os.File)
 	if !ok || !isTerminal(stdinFile) {
@@ -640,7 +893,7 @@ func matchOrSelectGateway(gateways []controlplane.GatewayEndpoint, selector stri
 		fmt.Fprintf(stderr, "  [%d] %s (%s, %s)\n", i+1, gw.GatewayID, host, gw.NetworkID)
 	}
 	fmt.Fprintf(stderr, "Select gateway [%d]: ", defaultIdx+1)
-	line, err := readPassword(stdin)
+	line, err := readLine(stdin)
 	if err != nil {
 		return nil, err
 	}
@@ -656,18 +909,36 @@ func matchOrSelectGateway(gateways []controlplane.GatewayEndpoint, selector stri
 }
 
 func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
+	defaultStateDir, primaryStateDir, fallbackReason := resolveDefaultStateDirectory()
 	flags := flag.NewFlagSet("xconnect up", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
-	gatewayTarget := flags.String("gateway", "", "gateway ID or endpoint host to connect to")
+	stateDirectory := flags.String("state-dir", defaultStateDir, "local XConnect-One state directory")
+	gatewayTarget := flags.String("gateway", "", "gateway ID, endpoint host, or URL to connect to (e.g. "+defaultKnownGateway+")")
 	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID")
 	deviceName := flags.String("name", "", "device display name")
 	bootstrapRuntime := flags.Bool("bootstrap", false, "install or repair the approved managed runtime before starting")
 	runtimeReleaseBaseURL := flags.String("runtime-release-base-url", os.Getenv("XCONNECT_RUNTIME_RELEASE_BASE_URL"), "approved Xray release mirror base URL")
 	watch := flags.Bool("watch", false, "keep running and synchronize periodically")
 	interval := flags.Duration("interval", time.Minute, "watch sync interval")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return fault.New(fault.CodeInvalidInput, "parse up arguments", err)
+	}
+	if flags.NArg() != 0 {
+		return fault.New(fault.CodeInvalidInput, "parse up arguments", nil)
+	}
+	explicitFlags := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
+	*stateDirectory = expandUserPath(*stateDirectory)
+	if !explicitFlags["state-dir"] && fallbackReason != "" {
+		fmt.Fprintf(stderr, "Note: default state directory %q is %s; using %q (or pass --state-dir)\n", primaryStateDir, fallbackReason, *stateDirectory)
+	}
+	if err := credential.EnsureWritableStateDir(*stateDirectory); err != nil {
+		return err
 	}
 	if *watch {
 		if err := usecase.ValidateSyncInterval(*interval); err != nil {
@@ -687,6 +958,9 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	if needEnroll {
 		session, sessErr := credential.LoadUserSession(*stateDirectory)
 		if errors.Is(sessErr, credential.ErrNotFound) || sessErr != nil {
+			if sessErr != nil && fault.Code(sessErr) == fault.CodeCredentialStorage {
+				return sessErr
+			}
 			if explicitGateway == "" && errors.Is(credErr, credential.ErrNotFound) {
 				// Preserve strict anti-downgrade contract when neither device credential nor login session exists.
 				result, upErr := usecase.Up(ctx, state.NewStore(*stateDirectory), newRuntime(*stateDirectory))
@@ -747,6 +1021,10 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	}
 	result, err := manager.Sync(ctx)
 	if err != nil {
+		if fault.Code(err) == fault.CodeRuntimePermission {
+			_, _ = fmt.Fprintf(stderr, "xconnect: root/administrator privileges required to configure network interface.\n")
+			_, _ = fmt.Fprintf(stderr, "Run: sudo xconnect-one up --state-dir %s\n", *stateDirectory)
+		}
 		return err
 	}
 	return writeJSON(stdout, result)
@@ -756,11 +1034,7 @@ func isTerminal(file *os.File) bool {
 	if file == nil {
 		return false
 	}
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
+	return isTerminalFD(int(file.Fd()))
 }
 
 func ensureWireGuardKeyPair(stStore *state.Store) (string, string, error) {
@@ -770,13 +1044,49 @@ func ensureWireGuardKeyPair(stStore *state.Store) (string, string, error) {
 	return usecase.GenerateWireGuardKeyPair()
 }
 
-func readPassword(r io.Reader) (string, error) {
+func readLine(r io.Reader) (string, error) {
+	if _, ok := r.(*os.File); ok {
+		var buf []byte
+		b := make([]byte, 1)
+		for {
+			n, err := r.Read(b)
+			if n > 0 {
+				if b[0] == '\n' {
+					break
+				}
+				buf = append(buf, b[0])
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return "", err
+			}
+		}
+		return strings.TrimRight(string(buf), "\r\n"), nil
+	}
 	reader := bufio.NewReader(r)
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+func readPassword(r io.Reader, stderr io.Writer, showPassword bool) (string, error) {
+	if !showPassword {
+		if file, ok := r.(*os.File); ok && isTerminal(file) {
+			raw, err := readTerminalPassword(int(file.Fd()))
+			if stderr != nil {
+				_, _ = fmt.Fprintln(stderr)
+			}
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimRight(string(raw), "\r\n"), nil
+		}
+	}
+	return readLine(r)
 }
 
 func openBrowser(targetURL string) error {

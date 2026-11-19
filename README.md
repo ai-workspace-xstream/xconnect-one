@@ -164,28 +164,29 @@ sudo wg show
 ### Key CLI flags reference
 
 #### `login` flags
-- `--server`: Control-plane base URL (default `https://accounts.svc.plus`)
+- `--server`: Control-plane base URL (default `https://accounts.svc.plus`; prompted with Enter-to-confirm in interactive TTY mode when omitted)
 - `--email`: Login email or username (optional in interactive TTY mode; prompted when omitted)
 - `--password-stdin`: Read password from standard input
-- `--totp`: 6-digit MFA TOTP code (optional; prompted when MFA is required)
+- `--show-password`: Echo password input visibly in terminal (insecure; by default terminal password/MFA prompts hide input)
+- `--totp`: 6-digit MFA TOTP code (optional; prompted with hidden input when MFA is required)
 - `--web`: Authenticate via browser OAuth / SSO
 - `--provider`: OAuth provider for `--web` login (e.g., `google`, `github`; default `google`)
-- `--gateway`: Gateway ID or endpoint host to enroll immediately after login
+- `--gateway`: Gateway ID, endpoint host, or URL (e.g., `https://ph-xconnect-gateway-01.svc.plus`) to enroll immediately after login; in interactive TTY mode when omitted, lists server/known gateways with optional skip
 - `--device-id`: Stable local device ID (used with `--gateway`)
 - `--name`: Device display name (used with `--gateway`)
 - `--status`: Display current login session status
 - `--json`: Output login status as JSON
-- `--state-dir`: Local state directory (default `~/.xconnect-one`)
+- `--state-dir`: Local state directory (default `~/.xconnect-one`, automatically falling back to `~/.xconnect-one-user` if `~/.xconnect-one` is owned by root or non-writable by the current user)
 
 #### `up` flags
-- `--gateway`: Target Gateway ID or endpoint host to enroll or switch to
+- `--gateway`: Target Gateway ID, endpoint host, or URL (e.g., `https://ph-xconnect-gateway-01.svc.plus`) to enroll or switch to
 - `--bootstrap`: Check/install the approved managed Xray runtime (and platform WireGuard packages) before starting
 - `--runtime-release-base-url`: Approved Xray release mirror base URL (or `XCONNECT_RUNTIME_RELEASE_BASE_URL`)
 - `--watch`: Keep running and synchronize configuration periodically
 - `--interval`: Watch sync interval (`15s` to `100s`; default `1m`)
 - `--device-id`: Stable local device ID
 - `--name`: Device display name
-- `--state-dir`: Local state directory (default `~/.xconnect-one`)
+- `--state-dir`: Local state directory (default `~/.xconnect-one`, with safe user fallback when `~/.xconnect-one` is inaccessible)
 
 #### `down` flags
 - `--logout`: Also clear the local user login session after stopping the tunnel

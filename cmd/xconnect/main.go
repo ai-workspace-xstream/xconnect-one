@@ -28,13 +28,19 @@ import (
 
 const (
 	defaultAccountsServer = "https://accounts.svc.plus"
-	defaultVersion        = "v0.1.18"
+	defaultKnownGateway   = "https://ph-xconnect-gateway-01.svc.plus"
+	// defaultConsoleBindingURL is where a logged-in user binds/authorizes a
+	// gateway network (e.g. net-ph-xconnect) to their account.
+	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
+	defaultVersion        = "v0.1.20"
+	defaultBuildNumber    = "20"
 )
 
 var (
-	version   = defaultVersion
-	gitCommit = "dev"
-	buildDate = ""
+	version     = defaultVersion
+	buildNumber = defaultBuildNumber
+	gitCommit   = "dev"
+	buildDate   = ""
 )
 
 type runtimeFactory func(stateDirectory string) overlayruntime.Interface
@@ -136,13 +142,17 @@ func runVersion(args []string, stdout, stderr io.Writer) error {
 		return fault.New(fault.CodeInvalidInput, "parse version arguments", err)
 	}
 	if *short {
-		fmt.Fprintln(stdout, version)
+		if gitCommit != "" && gitCommit != "dev" {
+			fmt.Fprintf(stdout, "%s+%s\n", version, gitCommit)
+		} else {
+			fmt.Fprintln(stdout, version)
+		}
 		return nil
 	}
 	if gitCommit != "" && gitCommit != "dev" {
-		fmt.Fprintf(stdout, "xconnect-one %s (%s, %s/%s)\n", version, gitCommit, runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintf(stdout, "xconnect-one %s (build %s, %s, %s/%s)\n", version, buildNumber, gitCommit, runtime.GOOS, runtime.GOARCH)
 	} else {
-		fmt.Fprintf(stdout, "xconnect-one %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintf(stdout, "xconnect-one %s (build %s, %s/%s)\n", version, buildNumber, runtime.GOOS, runtime.GOARCH)
 	}
 	return nil
 }
@@ -184,6 +194,7 @@ func runJoin(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	flags := flag.NewFlagSet("xconnect join", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	server := flags.String("server", defaultAccountsServer, "accounts service base URL")
+	gatewayTarget := flags.String("gateway", "", "preferred gateway ID, endpoint host, or URL (e.g. "+defaultKnownGateway+")")
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
 	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID")
 	deviceName := flags.String("name", "", "device display name")
@@ -195,7 +206,14 @@ func runJoin(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	allowInsecureLocalhost := flags.Bool("allow-insecure-localhost", false, "allow HTTP localhost controller for invite development")
 	inviteFile := flags.String("invite-file", "", "path to a protected file containing one XConnect join URI")
 	tokenFile := flags.String("token-file", "", "path to a file containing the accounts access token")
+	consoleURL := flags.String("console-url", defaultConsoleBindingURL, "console page used to bind/authorize a gateway network to the logged-in account")
+	noBrowser := flags.Bool("no-browser", false, "print the console binding URL instead of opening a browser")
+	waitFor := flags.Duration("wait", 10*time.Minute, "how long to wait for the console binding to complete (0 = do not wait)")
+	pollInterval := flags.Duration("poll-interval", 5*time.Second, "how often to re-check gateway authorization while waiting")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return fault.New(fault.CodeInvalidInput, "parse join arguments", err)
 	}
 	if flags.NArg() > 1 {
@@ -213,6 +231,30 @@ func runJoin(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 		targetValue, err = readJoinInvite(*inviteFile)
 		if err != nil {
 			return err
+		}
+	}
+
+	*stateDirectory = expandUserPath(*stateDirectory)
+	if targetValue == "" && strings.TrimSpace(*tokenFile) == "" {
+		session, sessErr := credential.LoadUserSession(*stateDirectory)
+		if sessErr != nil && !errors.Is(sessErr, credential.ErrNotFound) {
+			return sessErr
+		}
+		if sessErr == nil && strings.TrimSpace(session.AccessToken) != "" {
+			return runJoinWithSession(ctx, session, sessionJoinOptions{
+				StateDirectory: *stateDirectory,
+				DeviceID:       *deviceID,
+				DeviceName:     *deviceName,
+				Gateway:        *gatewayTarget,
+				NetworkID:      *networkID,
+				ConsoleURL:     *consoleURL,
+				OpenBrowser:    !*noBrowser,
+				Wait:           *waitFor,
+				PollInterval:   *pollInterval,
+			}, os.Stdin, stdout, stderr, httpClient, newCredentials)
+		}
+		if errors.Is(sessErr, credential.ErrNotFound) {
+			return fault.New(fault.CodeAuthenticationFailed, "not logged in: run 'xconnect-one login' first, then 'xconnect-one join' (or pass an invite: xconnect-one join 'xconnect://join/...')", nil)
 		}
 	}
 	target, err := resolveJoinTarget(targetValue, *server, *allowInsecureLocalhost)
@@ -671,11 +713,47 @@ func resolveJoinTarget(value, fallbackController string, allowInsecureLocalhost 
 }
 
 func defaultStateDirectory() string {
+	selected, _, _ := resolveDefaultStateDirectory()
+	return selected
+}
+
+func resolveDefaultStateDirectory() (selected, primary, fallbackReason string) {
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".xconnect-one"
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ".xconnect-one", ".xconnect-one", ""
 	}
-	return filepath.Join(home, ".xconnect-one")
+	primary = filepath.Join(home, ".xconnect-one")
+	if os.Geteuid() == 0 {
+		return primary, primary, ""
+	}
+	reason := credential.CheckStateDirectoryUsability(primary)
+	if reason == "" {
+		return primary, primary, ""
+	}
+	candidates := []string{
+		filepath.Join(home, ".xconnect-one-user"),
+		filepath.Join(home, ".config", "xconnect-one"),
+		filepath.Join(os.TempDir(), fmt.Sprintf("xconnect-one-%d", os.Geteuid())),
+	}
+	for _, candidate := range candidates {
+		if credential.CheckStateDirectoryUsability(candidate) == "" {
+			return candidate, primary, reason
+		}
+	}
+	return primary, primary, reason
+}
+
+func expandUserPath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "~" || strings.HasPrefix(trimmed, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if trimmed == "~" {
+				return home
+			}
+			return filepath.Join(home, trimmed[2:])
+		}
+	}
+	return trimmed
 }
 
 func defaultDeviceID() string {
