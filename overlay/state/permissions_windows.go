@@ -15,6 +15,10 @@ func secureStateDirectory(path string) error { return setPrivateStateACL(path) }
 
 func secureStateFile(path string) error { return setPrivateStateACL(path) }
 
+func preserveSudoDirectoryOwnership(string, bool) {}
+
+func preserveSudoFileOwnership(string, string) {}
+
 func replaceStateFile(source, target string) error {
 	sourcePath, err := windows.UTF16PtrFromString(source)
 	if err != nil {

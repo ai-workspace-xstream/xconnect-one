@@ -502,9 +502,12 @@ func readJSON(path string, target any) error {
 
 func writeJSON0600(path string, value any) error {
 	dir := filepath.Dir(path)
+	_, dirStatErr := os.Lstat(dir)
+	dirExisted := dirStatErr == nil
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fault.New(fault.CodeStateIO, "create overlay state directory", err)
 	}
+	preserveSudoDirectoryOwnership(dir, dirExisted)
 	if err := secureStateDirectory(dir); err != nil {
 		return fault.New(fault.CodeStateIO, "secure overlay state directory", err)
 	}
@@ -520,6 +523,7 @@ func writeJSON0600(path string, value any) error {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
+	preserveSudoFileOwnership(dir, temporaryPath)
 	if err := secureStateFile(temporaryPath); err != nil {
 		return fault.New(fault.CodeStateIO, "secure overlay state file", err)
 	}

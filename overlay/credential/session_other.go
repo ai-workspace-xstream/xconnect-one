@@ -19,3 +19,14 @@ func isDirectoryWritableByCurrentUser(path string) bool {
 	}
 	return info.Mode().Perm()&0o200 != 0
 }
+
+// ResolveSudoInvoker reports false on non-POSIX platforms.
+func ResolveSudoInvoker() (uint32, string, bool) {
+	return 0, "", false
+}
+
+func sudoInvokerUIDGID() (uint32, int, bool) {
+	return 0, -1, false
+}
+
+func chownToSudoInvokerIfMatching(string, uint32, int) {}

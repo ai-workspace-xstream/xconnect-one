@@ -33,7 +33,76 @@ import (
 var (
 	isTerminalFD         = term.IsTerminal
 	readTerminalPassword = term.ReadPassword
+	execSudoCommand      = defaultExecSudoCommand
 )
+
+func canAutoElevateWithSudo() bool {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("XCONNECT_NO_SUDO")) != "" {
+		return false
+	}
+	if !isTerminal(os.Stdin) {
+		return false
+	}
+	_, err := exec.LookPath("sudo")
+	return err == nil
+}
+
+func execSudoSelf(ctx context.Context, subcommand, stateDir string, origArgs []string) error {
+	exePath, err := os.Executable()
+	if err != nil || strings.TrimSpace(exePath) == "" {
+		exePath = os.Args[0]
+	}
+	sudoArgs := []string{exePath, subcommand, "--state-dir", stateDir}
+	sudoArgs = append(sudoArgs, stripStateDirFlag(origArgs)...)
+	return execSudoCommand(ctx, sudoArgs)
+}
+
+func defaultExecSudoCommand(ctx context.Context, args []string) error {
+	cmd := exec.CommandContext(ctx, "sudo", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func stripStateDirFlag(args []string) []string {
+	filtered := make([]string, 0, len(args))
+	skipNext := false
+	for _, arg := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if arg == "--state-dir" || arg == "-state-dir" {
+			skipNext = true
+			continue
+		}
+		if strings.HasPrefix(arg, "--state-dir=") || strings.HasPrefix(arg, "-state-dir=") {
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	return filtered
+}
+
+func handleRuntimePermissionError(ctx context.Context, subcommand, stateDir string, origArgs []string, noSudo bool, stderr io.Writer, err error) error {
+	if fault.Code(err) != fault.CodeRuntimePermission {
+		return err
+	}
+	if !noSudo && canAutoElevateWithSudo() {
+		_, _ = fmt.Fprintf(stderr, "xconnect: administrator privileges required to configure network interface; requesting sudo...\n")
+		if sudoErr := execSudoSelf(ctx, subcommand, stateDir, origArgs); sudoErr != nil {
+			return sudoErr
+		}
+		return nil
+	}
+	_, _ = fmt.Fprintf(stderr, "xconnect: root/administrator privileges required to configure network interface.\n")
+	_, _ = fmt.Fprintf(stderr, "Run: sudo xconnect-one %s --state-dir %s\n", subcommand, stateDir)
+	return err
+}
 
 func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
 	defaultStateDir, primaryStateDir, fallbackReason := resolveDefaultStateDirectory()
@@ -101,34 +170,11 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 		return nil
 	}
 
-	interactive := isTerminal(os.Stdin) && !*passwordStdin
-
 	if !explicitFlags["state-dir"] && fallbackReason != "" {
 		fmt.Fprintf(stderr, "Note: default state directory %q is %s; using %q (or pass --state-dir)\n", primaryStateDir, fallbackReason, *stateDirectory)
 	}
-	if !explicitFlags["state-dir"] && interactive {
-		fmt.Fprintf(stderr, "State directory [%s]: ", *stateDirectory)
-		line, err := readLine(os.Stdin)
-		if err != nil {
-			return err
-		}
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			*stateDirectory = expandUserPath(trimmed)
-		}
-	}
 	if err := credential.EnsureWritableStateDir(*stateDirectory); err != nil {
 		return err
-	}
-
-	if !explicitFlags["server"] && interactive {
-		fmt.Fprintf(stderr, "Accounts server [%s]: ", *server)
-		line, err := readLine(os.Stdin)
-		if err != nil {
-			return err
-		}
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			*server = trimmed
-		}
 	}
 	normalizedServer, err := normalizeServerURL(*server)
 	if err != nil {
@@ -188,18 +234,8 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 			return err
 		}
 		fmt.Fprintf(stdout, "Selected gateway %s (%s) on network %s\n", enrolled.Gateway.GatewayID, enrolled.Gateway.EndpointHost, enrolled.Gateway.NetworkID)
-	} else if interactive {
-		session, err := credential.LoadUserSession(*stateDirectory)
-		if err != nil {
-			return err
-		}
-		enrolled, skipped, err := promptAndEnrollGatewayOnLogin(ctx, session, *stateDirectory, *deviceID, *deviceName, os.Stdin, stderr, httpClient, newCredentials)
-		if err != nil {
-			return err
-		}
-		if !skipped {
-			fmt.Fprintf(stdout, "Selected gateway %s (%s) on network %s\n", enrolled.Gateway.GatewayID, enrolled.Gateway.EndpointHost, enrolled.Gateway.NetworkID)
-		}
+	} else {
+		fmt.Fprintln(stdout, "Next: run 'xconnect-one join' to authorize a gateway and network.")
 	}
 	return nil
 }
@@ -739,92 +775,6 @@ func enrollResolvedGateway(
 	}, nil
 }
 
-func promptAndEnrollGatewayOnLogin(
-	ctx context.Context,
-	session credential.UserSession,
-	stateDirectory string,
-	deviceID string,
-	deviceName string,
-	stdin io.Reader,
-	stderr io.Writer,
-	httpClient *http.Client,
-	newCredentials credentialFactory,
-) (enrolledGatewayResult, bool, error) {
-	client, err := controlplane.New(session.Server, session.AccessToken, httpClient)
-	if err != nil {
-		return enrolledGatewayResult{}, false, err
-	}
-	gateways, listErr := client.ListGateways(ctx)
-	if listErr == nil && len(gateways) > 0 {
-		defaultIdx := preferredGatewayIndex(gateways)
-		fmt.Fprintln(stderr, "Available gateways:")
-		for i, gw := range gateways {
-			host := gw.EndpointHost
-			if host == "" {
-				host = gw.TransportServerName
-			}
-			fmt.Fprintf(stderr, "  [%d] %s (%s, %s)\n", i+1, gw.GatewayID, host, gw.NetworkID)
-		}
-		fmt.Fprintln(stderr, "  [s] Skip (select later on 'xconnect-one up')")
-		fmt.Fprintf(stderr, "Select gateway [%d] (or enter gateway ID/URL, 's' to skip): ", defaultIdx+1)
-		line, err := readLine(stdin)
-		if err != nil {
-			return enrolledGatewayResult{}, false, err
-		}
-		choice := strings.TrimSpace(line)
-		if isSkipChoice(choice) {
-			fmt.Fprintln(stderr, "Skipped gateway selection; run 'xconnect-one up' to select and connect later.")
-			return enrolledGatewayResult{}, true, nil
-		}
-		selector := ""
-		if choice == "" {
-			selector = gateways[defaultIdx].GatewayID
-		} else if idx, convErr := strconv.Atoi(choice); convErr == nil {
-			if idx < 1 || idx > len(gateways) {
-				return enrolledGatewayResult{}, false, fault.New(fault.CodeInvalidInput, fmt.Sprintf("invalid gateway selection %q", choice), nil)
-			}
-			selector = gateways[idx-1].GatewayID
-		} else {
-			selector = choice
-		}
-		enrolled, err := enrollResolvedGateway(ctx, client, session, stateDirectory, deviceID, deviceName, gateways, selector, stdin, stderr, newCredentials)
-		return enrolled, false, err
-	}
-
-	if listErr == nil && len(gateways) == 0 {
-		fmt.Fprintf(stderr, "Note: no gateways or networks are currently bound to your account on %s yet.\n", session.Server)
-		fmt.Fprintln(stderr, "Your login session has been saved. Next steps:")
-		fmt.Fprintln(stderr, "  1. xconnect-one join   (opens the console to bind a gateway/network, e.g. ph-xconnect-gateway-01 / net-ph-xconnect)")
-		fmt.Fprintln(stderr, "  2. xconnect-one up     (connect to the private network)")
-		return enrolledGatewayResult{}, true, nil
-	}
-
-	fmt.Fprintf(stderr, "Note: could not fetch gateway list from server (%v).\n", listErr)
-	fmt.Fprintln(stderr, "Gateway options:")
-	fmt.Fprintf(stderr, "  [1] %s\n", defaultKnownGateway)
-	fmt.Fprintln(stderr, "  [s] Skip (select later on 'xconnect-one up')")
-	fmt.Fprintf(stderr, "Select gateway [s] (or enter 1 / gateway ID / URL): ")
-	line, err := readLine(stdin)
-	if err != nil {
-		return enrolledGatewayResult{}, false, err
-	}
-	choice := strings.TrimSpace(line)
-	if choice == "" || isSkipChoice(choice) {
-		fmt.Fprintln(stderr, "Skipped gateway selection; run 'xconnect-one up' to select and connect later.")
-		return enrolledGatewayResult{}, true, nil
-	}
-	selector := choice
-	if choice == "1" {
-		selector = defaultKnownGateway
-	}
-	enrolled, err := resolveAndEnrollGateway(ctx, session, stateDirectory, deviceID, deviceName, selector, stderr, httpClient, newCredentials)
-	return enrolled, false, err
-}
-
-func isSkipChoice(choice string) bool {
-	return strings.EqualFold(choice, "s") || strings.EqualFold(choice, "skip") || strings.EqualFold(choice, "none")
-}
-
 func preferredGatewayIndex(gateways []controlplane.GatewayEndpoint) int {
 	for i, gw := range gateways {
 		if gw.RuntimeHealthy {
@@ -920,6 +870,7 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	runtimeReleaseBaseURL := flags.String("runtime-release-base-url", os.Getenv("XCONNECT_RUNTIME_RELEASE_BASE_URL"), "approved Xray release mirror base URL")
 	watch := flags.Bool("watch", false, "keep running and synchronize periodically")
 	interval := flags.Duration("interval", time.Minute, "watch sync interval")
+	noSudo := flags.Bool("no-sudo", false, "do not automatically invoke sudo when root privileges are required")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -965,7 +916,7 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 				// Preserve strict anti-downgrade contract when neither device credential nor login session exists.
 				result, upErr := usecase.Up(ctx, state.NewStore(*stateDirectory), newRuntime(*stateDirectory))
 				if upErr != nil {
-					return upErr
+					return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, upErr)
 				}
 				return writeJSON(stdout, result)
 			}
@@ -986,7 +937,7 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 			ReleaseBaseURL:        *runtimeReleaseBaseURL,
 			InstallSystemPackages: true,
 		}); err != nil {
-			return err
+			return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, err)
 		}
 		_, _ = fmt.Fprintln(stderr, "xconnect: managed runtime ready")
 	}
@@ -999,6 +950,13 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	manager := usecase.NewDeviceSessionManager(client, state.NewStore(*stateDirectory), credentials, runtimeInstance).WithSignedConfigV2()
 	if *watch {
 		if firstResult, err := manager.Sync(ctx); err != nil {
+			if fault.Code(err) == fault.CodeRuntimePermission {
+				return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, err)
+			}
+			if fault.Code(err) == fault.CodeCredentialInvalid {
+				_, _ = fmt.Fprintln(stderr, "xconnect: stored device credential was rejected or revoked; run 'xconnect-one join' to re-enroll this device.")
+				return err
+			}
 			if fault.Code(err) == fault.CodeAuthenticationFailed || fault.Code(err) == fault.CodeAccessDenied || fault.Code(err) == fault.CodeCredentialExpired || fault.Code(err) == fault.CodeCredentialMissing || fault.Code(err) == fault.CodeNotJoined {
 				return err
 			}
@@ -1022,8 +980,10 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	result, err := manager.Sync(ctx)
 	if err != nil {
 		if fault.Code(err) == fault.CodeRuntimePermission {
-			_, _ = fmt.Fprintf(stderr, "xconnect: root/administrator privileges required to configure network interface.\n")
-			_, _ = fmt.Fprintf(stderr, "Run: sudo xconnect-one up --state-dir %s\n", *stateDirectory)
+			return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, err)
+		}
+		if fault.Code(err) == fault.CodeCredentialInvalid {
+			_, _ = fmt.Fprintln(stderr, "xconnect: stored device credential was rejected or revoked; run 'xconnect-one join' to re-enroll this device.")
 		}
 		return err
 	}

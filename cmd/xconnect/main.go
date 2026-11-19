@@ -33,7 +33,7 @@ const (
 	// gateway network (e.g. net-ph-xconnect) to their account.
 	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
 	defaultVersion        = "v0.1.20"
-	defaultBuildNumber    = "20"
+	defaultBuildNumber    = "21"
 )
 
 var (
@@ -411,15 +411,34 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer, newRunt
 }
 
 func runDown(ctx context.Context, args []string, stdout, stderr io.Writer, newRuntime runtimeFactory) error {
+	defaultStateDir, primaryStateDir, fallbackReason := resolveDefaultStateDirectory()
 	flags := flag.NewFlagSet("xconnect down", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
+	stateDirectory := flags.String("state-dir", defaultStateDir, "local XConnect-One state directory")
 	logout := flags.Bool("logout", false, "also clear local user login session after stopping the tunnel")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "parse down arguments", err)
 	}
+	explicitStateDir := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "state-dir" {
+			explicitStateDir = true
+		}
+	})
+	*stateDirectory = expandUserPath(*stateDirectory)
+	if !explicitStateDir && fallbackReason != "" {
+		fmt.Fprintf(stderr, "Note: default state directory %q is %s; using %q (or pass --state-dir)\n", primaryStateDir, fallbackReason, *stateDirectory)
+	}
 	result, err := usecase.Down(ctx, state.NewStore(*stateDirectory), newRuntime(*stateDirectory))
 	if err != nil {
+		if fault.Code(err) == fault.CodeRuntimePermission {
+			if canAutoElevateWithSudo() {
+				_, _ = fmt.Fprintln(stderr, "xconnect: administrator privileges required to stop network interface; requesting sudo...")
+				return execSudoSelf(ctx, "down", *stateDirectory, args)
+			}
+			_, _ = fmt.Fprintf(stderr, "xconnect: root/administrator privileges required to stop network interface.\n")
+			_, _ = fmt.Fprintf(stderr, "Run: sudo xconnect-one down --state-dir %s\n", *stateDirectory)
+		}
 		return err
 	}
 	if *logout {
@@ -719,21 +738,44 @@ func defaultStateDirectory() string {
 
 func resolveDefaultStateDirectory() (selected, primary, fallbackReason string) {
 	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
+	sudoUID, sudoHome, hasSudo := credential.ResolveSudoInvoker()
+	if hasSudo && sudoHome != "" {
+		if err != nil || strings.TrimSpace(home) == "" || home == "/root" || home == "/var/root" {
+			home = sudoHome
+			err = nil
+		}
+	}
+	return resolveDefaultStateDirectoryFor(os.Geteuid(), home, err, sudoUID, hasSudo)
+}
+
+func resolveDefaultStateDirectoryFor(euid int, home string, homeErr error, sudoUID uint32, hasSudo bool) (selected, primary, fallbackReason string) {
+	if homeErr != nil || strings.TrimSpace(home) == "" {
 		return ".xconnect-one", ".xconnect-one", ""
 	}
 	primary = filepath.Join(home, ".xconnect-one")
-	if os.Geteuid() == 0 {
-		return primary, primary, ""
+	candidates := []string{
+		filepath.Join(home, ".xconnect-one-user"),
+		filepath.Join(home, ".config", "xconnect-one"),
+		filepath.Join(os.TempDir(), fmt.Sprintf("xconnect-one-%d", effectiveUIDForState(euid, sudoUID, hasSudo))),
+	}
+	if euid == 0 {
+		if !hasSudo || sudoUID == 0 {
+			return primary, primary, ""
+		}
+		reason := credential.CheckStateDirectoryUsabilityForUID(primary, sudoUID)
+		if reason == "" {
+			return primary, primary, ""
+		}
+		for _, candidate := range candidates {
+			if credential.CheckStateDirectoryUsabilityForUID(candidate, sudoUID) == "" {
+				return candidate, primary, reason
+			}
+		}
+		return primary, primary, reason
 	}
 	reason := credential.CheckStateDirectoryUsability(primary)
 	if reason == "" {
 		return primary, primary, ""
-	}
-	candidates := []string{
-		filepath.Join(home, ".xconnect-one-user"),
-		filepath.Join(home, ".config", "xconnect-one"),
-		filepath.Join(os.TempDir(), fmt.Sprintf("xconnect-one-%d", os.Geteuid())),
 	}
 	for _, candidate := range candidates {
 		if credential.CheckStateDirectoryUsability(candidate) == "" {
@@ -741,6 +783,13 @@ func resolveDefaultStateDirectory() (selected, primary, fallbackReason string) {
 		}
 	}
 	return primary, primary, reason
+}
+
+func effectiveUIDForState(euid int, sudoUID uint32, hasSudo bool) int {
+	if euid == 0 && hasSudo && sudoUID > 0 {
+		return int(sudoUID)
+	}
+	return euid
 }
 
 func expandUserPath(raw string) string {

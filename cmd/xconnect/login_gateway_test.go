@@ -614,17 +614,13 @@ func TestLoginInteractivePromptsServerStateDirPasswordAndGateway(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Interactive TTY input sequence:
-	// 1. State directory prompt -> customStateDir
-	// 2. Accounts server prompt -> server.URL
-	// 3. Email prompt -> interactive@example.test
-	// 4. Password prompt -> readTerminalPassword returns "term-secret-pass"
-	// 5. Gateway prompt -> "https://ph-xconnect-gateway-01.svc.plus"
+	// Interactive TTY input sequence is now streamlined: only Email and Password
+	// (no prompts for State directory, Accounts server, or Gateway selection).
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = fmt.Fprintf(pw, "%s\n%s\ninteractive@example.test\nhttps://ph-xconnect-gateway-01.svc.plus\n", customStateDir, server.URL)
+	_, _ = pw.WriteString("interactive@example.test\n")
 	_ = pw.Close()
 
 	oldStdin := os.Stdin
@@ -642,7 +638,9 @@ func TestLoginInteractivePromptsServerStateDirPasswordAndGateway(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err = runWithFactories(context.Background(), []string{"login"}, &stdout, &stderr, server.Client(),
+	err = runWithFactories(context.Background(), []string{
+		"login", "--server", server.URL, "--state-dir", customStateDir,
+	}, &stdout, &stderr, server.Client(),
 		func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
 		func(string) credential.Store { return &credential.MemoryStore{} },
 	)
@@ -652,17 +650,14 @@ func TestLoginInteractivePromptsServerStateDirPasswordAndGateway(t *testing.T) {
 	if !termPasswordCalled {
 		t.Fatal("expected hidden terminal password reader to be used")
 	}
-	if !strings.Contains(stderr.String(), "Accounts server [https://accounts.svc.plus]:") {
-		t.Fatalf("expected server prompt with default, stderr=%s", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "State directory [") {
-		t.Fatalf("expected state-dir prompt, stderr=%s", stderr.String())
+	if strings.Contains(stderr.String(), "Accounts server [") || strings.Contains(stderr.String(), "State directory [") || strings.Contains(stderr.String(), "Select gateway") {
+		t.Fatalf("did not expect redundant interactive prompts on login, stderr=%s", stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "Login successful! Logged in as interactive@example.test") {
 		t.Fatalf("unexpected stdout: %s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "Selected gateway ph-xconnect-gateway-01") {
-		t.Fatalf("expected enrolled gateway output, stdout=%s", stdout.String())
+	if !strings.Contains(stdout.String(), "xconnect-one join") {
+		t.Fatalf("expected next-step join instruction, stdout=%s", stdout.String())
 	}
 	if _, err := credential.LoadUserSession(customStateDir); err != nil {
 		t.Fatalf("expected session saved in custom state dir %q: %v", customStateDir, err)
@@ -739,10 +734,10 @@ func TestLoginWithEmptyGatewayListDoesNotShowBrokenOption(t *testing.T) {
 		t.Fatalf("expected interactive login with empty gateways to succeed, got %v stderr=%s", err, stderr.String())
 	}
 	if strings.Contains(stderr.String(), "Gateway options:") || strings.Contains(stderr.String(), "Select gateway") {
-		t.Fatalf("must not prompt fake [1] gateway option when server returned empty gateways: %s", stderr.String())
+		t.Fatalf("must not prompt gateway options on login: %s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "no gateways or networks are currently bound") || !strings.Contains(stderr.String(), "xconnect-one join") {
-		t.Fatalf("expected guidance on stderr, got: %s", stderr.String())
+	if !strings.Contains(stdout.String(), "xconnect-one join") {
+		t.Fatalf("expected join guidance on stdout, got: %s", stdout.String())
 	}
 	if _, err := credential.LoadUserSession(stateDir); err != nil {
 		t.Fatalf("expected saved session to remain intact: %v", err)
@@ -939,5 +934,94 @@ func TestJoinSessionOpensConsolePollsAndEnrollsGateway(t *testing.T) {
 	rec, err := memCreds.Load(context.Background())
 	if err != nil || rec.NetworkID != "net-ph-xconnect" {
 		t.Fatalf("expected enrolled credential for net-ph-xconnect, got rec=%+v err=%v", rec, err)
+	}
+}
+
+func TestResolveDefaultStateDirectoryForSudoFallsBackToUserDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permission modes do not restrict directory creation on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses POSIX permission bits")
+	}
+
+	homeDir := t.TempDir()
+	primary := filepath.Join(homeDir, ".xconnect-one")
+	if err := os.MkdirAll(primary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pure root daemon (no SUDO_UID) stays on primary.
+	selected, gotPrimary, reason := resolveDefaultStateDirectoryFor(0, homeDir, nil, 0, false)
+	if selected != primary || gotPrimary != primary || reason != "" {
+		t.Fatalf("expected pure root to use primary %q, got selected=%q primary=%q reason=%q", primary, selected, gotPrimary, reason)
+	}
+
+	// Sudo invocation when primary is unusable (e.g. root-owned/unwritable by user)
+	// resolves to ~/.xconnect-one-user so sudo up shares credentials with login/join.
+	if err := os.Chmod(primary, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(primary, 0o700) })
+
+	selected, gotPrimary, reason = resolveDefaultStateDirectoryFor(0, homeDir, nil, uint32(os.Geteuid()), true)
+	wantFallback := filepath.Join(homeDir, ".xconnect-one-user")
+	if selected != wantFallback || gotPrimary != primary || reason == "" {
+		t.Fatalf("expected sudo fallback %q with reason, got selected=%q primary=%q reason=%q", wantFallback, selected, gotPrimary, reason)
+	}
+}
+
+func TestHandleRuntimePermissionErrorAndStripStateDirFlag(t *testing.T) {
+	origIsTerminal := isTerminalFD
+	origExecSudo := execSudoCommand
+	t.Cleanup(func() {
+		isTerminalFD = origIsTerminal
+		execSudoCommand = origExecSudo
+	})
+
+	stateDir := t.TempDir()
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pw.Close()
+	oldStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = pr.Close()
+	})
+	isTerminalFD = func(fd int) bool { return fd == int(pr.Fd()) }
+
+	permErr := fault.New(fault.CodeRuntimePermission, "apply desktop runtime", nil)
+	var recordedArgs []string
+	execSudoCommand = func(_ context.Context, args []string) error {
+		recordedArgs = append([]string(nil), args...)
+		return nil
+	}
+
+	var stderr bytes.Buffer
+	if os.Geteuid() != 0 && runtime.GOOS != "windows" {
+		if got := handleRuntimePermissionError(context.Background(), "up", stateDir, []string{"--watch", "--state-dir", "/tmp/old"}, false, &stderr, permErr); got != nil {
+			t.Fatalf("expected nil after sudo elevation, got %v", got)
+		}
+		joined := strings.Join(recordedArgs, " ")
+		if !strings.Contains(joined, " up --state-dir "+stateDir+" --watch") || strings.Contains(joined, "/tmp/old") {
+			t.Fatalf("unexpected sudo args: %v", recordedArgs)
+		}
+	}
+
+	// Verify --no-sudo skips elevation and prints manual command.
+	stderr.Reset()
+	recordedArgs = nil
+	got := handleRuntimePermissionError(context.Background(), "up", stateDir, []string{"--no-sudo"}, true, &stderr, permErr)
+	if fault.Code(got) != fault.CodeRuntimePermission {
+		t.Fatalf("expected CodeRuntimePermission with noSudo, got %v", got)
+	}
+	if len(recordedArgs) != 0 {
+		t.Fatalf("expected no sudo call when noSudo=true, got %v", recordedArgs)
+	}
+	if !strings.Contains(stderr.String(), "Run: sudo xconnect-one up --state-dir "+stateDir) {
+		t.Fatalf("expected manual sudo hint, got stderr=%s", stderr.String())
 	}
 }

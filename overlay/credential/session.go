@@ -64,6 +64,61 @@ func CheckStateDirectoryUsability(stateDir string) string {
 	return ""
 }
 
+// CheckStateDirectoryUsabilityForUID evaluates usability of stateDir from the
+// perspective of targetUID (for example, the sudo-invoking user when running
+// as euid 0). If targetUID == 0 or euid != 0, it falls back to
+// CheckStateDirectoryUsability.
+func CheckStateDirectoryUsabilityForUID(stateDir string, targetUID uint32) string {
+	if os.Geteuid() != 0 || targetUID == 0 {
+		return CheckStateDirectoryUsability(stateDir)
+	}
+	trimmed := strings.TrimSpace(stateDir)
+	if trimmed == "" {
+		return "empty state directory"
+	}
+	for _, checkPath := range []string{trimmed, filepath.Join(trimmed, "protected")} {
+		info, err := os.Lstat(checkPath)
+		if errors.Is(err, os.ErrNotExist) {
+			if checkPath == trimmed {
+				parent := nearestExistingAncestor(trimmed)
+				if parent == "" {
+					return "parent directory unavailable"
+				}
+				pInfo, pErr := os.Lstat(parent)
+				if pErr != nil {
+					return pErr.Error()
+				}
+				if !pInfo.IsDir() {
+					return "parent path is not a directory"
+				}
+				if ownerUID, ok := directoryOwnerUID(pInfo); ok && ownerUID != targetUID {
+					if ownerUID == 0 {
+						return "parent directory owned by root"
+					}
+					return fmt.Sprintf("parent directory owned by uid %d", ownerUID)
+				}
+			}
+			continue
+		}
+		if err != nil {
+			return err.Error()
+		}
+		if !info.IsDir() {
+			return "not a directory"
+		}
+		if ownerUID, ok := directoryOwnerUID(info); ok && ownerUID != targetUID {
+			if ownerUID == 0 {
+				return "owned by root"
+			}
+			return fmt.Sprintf("owned by uid %d", ownerUID)
+		}
+		if info.Mode().Perm()&0o700 != 0o700 {
+			return "not writable by invoking user"
+		}
+	}
+	return ""
+}
+
 func checkDirUsable(dir string) string {
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -207,8 +262,18 @@ func SaveUserSession(stateDir string, session UserSession) error {
 		return fault.New(fault.CodeCredentialStorage, "state directory cannot be empty", nil)
 	}
 	dir := filepath.Join(stateDir, "protected")
+	_, stateExistedErr := os.Lstat(stateDir)
+	_, dirExistedErr := os.Lstat(dir)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(stateDir, dir, "create protected directory", err), err)
+	}
+	if sudoUID, sudoGID, ok := sudoInvokerUIDGID(); ok {
+		if errors.Is(stateExistedErr, os.ErrNotExist) {
+			chownToSudoInvokerIfMatching(stateDir, sudoUID, sudoGID)
+		}
+		if errors.Is(dirExistedErr, os.ErrNotExist) {
+			chownToSudoInvokerIfMatching(dir, sudoUID, sudoGID)
+		}
 	}
 	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || !isDirectoryWritableByCurrentUser(dir) {
@@ -229,6 +294,11 @@ func SaveUserSession(stateDir string, session UserSession) error {
 	tmpPath := filepath.Join(dir, ".user-session.json.tmp")
 	if err := os.WriteFile(tmpPath, raw, 0600); err != nil {
 		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(stateDir, dir, "write temp session file", err), err)
+	}
+	if sudoUID, sudoGID, ok := sudoInvokerUIDGID(); ok {
+		if ownerUID, hasOwner := directoryOwnerUID(info); hasOwner && ownerUID == sudoUID {
+			chownToSudoInvokerIfMatching(tmpPath, sudoUID, sudoGID)
+		}
 	}
 	if err := os.Chmod(tmpPath, 0600); err != nil {
 		_ = os.Remove(tmpPath)
