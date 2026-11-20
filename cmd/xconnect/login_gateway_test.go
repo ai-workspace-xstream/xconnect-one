@@ -1049,3 +1049,17 @@ func TestJoinRejectsExpiredSessionWithActionableLoginHint(t *testing.T) {
 		t.Fatalf("expected xconnect-one login guidance, got %v", err)
 	}
 }
+
+func TestFormatFaultErrorPreservesOperationChain(t *testing.T) {
+	inner := fault.New(fault.CodeRuntimeApplyFailed, "start WireGuard runtime", os.ErrPermission)
+	middle := fault.New(fault.CodeRuntimeApplyFailed, "apply desktop runtime", inner)
+	outer := fault.New(fault.CodeRuntimeApplyFailed, "apply synchronized runtime", middle)
+	got := formatFaultError(outer)
+	want := "apply synchronized runtime -> apply desktop runtime -> start WireGuard runtime: runtime_apply_failed"
+	if got != want {
+		t.Fatalf("formatFaultError=%q, want %q", got, want)
+	}
+	if strings.Contains(got, "permission") {
+		t.Fatalf("must not leak raw non-fault cause error: %q", got)
+	}
+}

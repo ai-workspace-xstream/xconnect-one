@@ -95,6 +95,10 @@ func handleRuntimePermissionError(ctx context.Context, subcommand, stateDir stri
 	if !noSudo && canAutoElevateWithSudo() {
 		_, _ = fmt.Fprintf(stderr, "xconnect: administrator privileges required to configure network interface; requesting sudo...\n")
 		if sudoErr := execSudoSelf(ctx, subcommand, stateDir, origArgs); sudoErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(sudoErr, &exitErr) && exitErr.ExitCode() != 0 {
+				return exitStatusError(exitErr.ExitCode())
+			}
 			return sudoErr
 		}
 		return nil

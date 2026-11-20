@@ -83,10 +83,57 @@ func (b *osDesktopBackend) Run(ctx context.Context, name string, args ...string)
 	}
 	args = translated
 	command := exec.CommandContext(ctx, name, args...)
+	command.Env = darwinRuntimeCommandEnv(os.Environ(), name)
 	command.Stdin = nil
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	return command.Run()
+}
+
+// darwinRuntimeCommandEnv ensures Homebrew runtime directories (/opt/homebrew/bin,
+// /usr/local/bin, and the executable's own directory) are present in PATH when
+// elevated via sudo or LaunchDaemon, so scripts like wg-quick find bash 4+, wg,
+// and wireguard-go instead of macOS /bin/bash 3.2.
+func darwinRuntimeCommandEnv(base []string, commandPath string) []string {
+	var extra []string
+	if dir := filepath.Dir(commandPath); filepath.IsAbs(commandPath) && dir != "." && dir != "" {
+		extra = append(extra, dir)
+	}
+	extra = append(extra, "/opt/homebrew/bin", "/usr/local/bin")
+
+	existingPath := ""
+	out := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, "PATH=") {
+			existingPath = strings.TrimPrefix(entry, "PATH=")
+			continue
+		}
+		out = append(out, entry)
+	}
+
+	seen := make(map[string]struct{})
+	merged := make([]string, 0, len(extra)+8)
+	for _, dir := range extra {
+		if dir == "" {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		merged = append(merged, dir)
+	}
+	for _, dir := range filepath.SplitList(existingPath) {
+		if dir == "" {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		merged = append(merged, dir)
+	}
+	return append(out, "PATH="+strings.Join(merged, string(os.PathListSeparator)))
 }
 
 func (b *osDesktopBackend) WireGuardInterfaceName(logicalName string) (string, error) {

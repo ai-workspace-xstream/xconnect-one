@@ -169,3 +169,17 @@ func TestDarwinDesktopStatusReportsRealInterfaceAndKeepsAdapterID(t *testing.T) 
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 }
+
+func TestDarwinRuntimeCommandEnvPrependsHomebrewAndCommandDir(t *testing.T) {
+	env := darwinRuntimeCommandEnv([]string{"FOO=bar", "PATH=/usr/bin:/bin"}, "/custom/bin/wg-quick")
+	var gotPath string
+	for _, entry := range env {
+		if len(entry) > 5 && entry[:5] == "PATH=" {
+			gotPath = entry[5:]
+		}
+	}
+	want := "/custom/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+	if gotPath != want {
+		t.Fatalf("PATH=%q, want %q", gotPath, want)
+	}
+}

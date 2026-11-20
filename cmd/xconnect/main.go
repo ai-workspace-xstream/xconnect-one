@@ -33,8 +33,14 @@ const (
 	// gateway network (e.g. net-ph-xconnect) to their account.
 	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
 	defaultVersion        = "v0.1.20"
-	defaultBuildNumber    = "22"
+	defaultBuildNumber    = "23"
 )
+
+type exitStatusError int
+
+func (e exitStatusError) Error() string {
+	return fmt.Sprintf("exit status %d", int(e))
+}
 
 var (
 	version     = defaultVersion
@@ -50,9 +56,38 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, http.DefaultClient); err != nil {
-		fmt.Fprintf(os.Stderr, "error[%s]: %v\n", fault.Code(err), err)
+		var exitErr exitStatusError
+		if errors.As(err, &exitErr) {
+			os.Exit(int(exitErr))
+		}
+		fmt.Fprintf(os.Stderr, "error[%s]: %s\n", fault.Code(err), formatFaultError(err))
 		os.Exit(1)
 	}
+}
+
+func formatFaultError(err error) string {
+	var faultErr *fault.Error
+	if !errors.As(err, &faultErr) {
+		return err.Error()
+	}
+	var ops []string
+	for cur := error(faultErr); cur != nil; {
+		var fe *fault.Error
+		if !errors.As(cur, &fe) {
+			break
+		}
+		raw := fe.Error()
+		codeSuffix := ": " + fe.Code()
+		op := strings.TrimSuffix(raw, codeSuffix)
+		if op != "" && (len(ops) == 0 || ops[len(ops)-1] != op) {
+			ops = append(ops, op)
+		}
+		cur = errors.Unwrap(fe)
+	}
+	if len(ops) == 0 {
+		return faultErr.Error()
+	}
+	return strings.Join(ops, " -> ") + ": " + faultErr.Code()
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client) error {
