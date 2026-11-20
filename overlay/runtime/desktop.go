@@ -561,7 +561,7 @@ func (r *Desktop) startManifest(ctx context.Context, manifest desktopManifest, d
 	manifest.Xray.Revision = manifest.Revision
 	if err := r.waitForXrayReady(ctx, manifest); err != nil {
 		_ = r.backend.Stop(manifest.Xray)
-		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "verify Xray runtime", nil)
+		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "verify Xray runtime", err)
 	}
 	if manifest.PathManager != nil {
 		identity, err := r.backend.Start(manifest.PathManager.Executable, []string{"path-manager", "-config", manifest.PathManager.ConfigPath}, manifest.Revision, manifest.PathManager.ConfigSHA256)
@@ -776,19 +776,22 @@ func (r *Desktop) waitForXrayReady(ctx context.Context, manifest desktopManifest
 	defer ticker.Stop()
 	for {
 		trusted, err := r.processTrusted(manifest)
-		if err != nil || !trusted {
-			return errors.New("Xray process exited before readiness")
+		if err != nil {
+			return err
+		}
+		if !trusted {
+			return fault.New(fault.CodeRuntimeApplyFailed, "Xray process exited before readiness", nil)
 		}
 		owned, err := r.backend.LoopbackOwned(manifest.Xray, manifest.LoopbackAddress)
 		if err != nil {
-			return err
+			return fault.New(fault.CodeRuntimeApplyFailed, "probe Xray loopback socket", err)
 		}
 		if owned {
 			return nil
 		}
 		select {
 		case <-readinessContext.Done():
-			return readinessContext.Err()
+			return fault.New(fault.CodeRuntimeApplyFailed, "Xray loopback readiness timed out", readinessContext.Err())
 		case <-ticker.C:
 		}
 	}

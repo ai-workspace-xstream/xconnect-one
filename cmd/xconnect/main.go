@@ -33,7 +33,7 @@ const (
 	// gateway network (e.g. net-ph-xconnect) to their account.
 	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
 	defaultVersion        = "v0.1.20"
-	defaultBuildNumber    = "23"
+	defaultBuildNumber    = "24"
 )
 
 type exitStatusError int
@@ -120,7 +120,7 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 	filteredArgs := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "-v" || arg == "--version" || arg == "version" {
+		if arg == "-v" || arg == "-V" || arg == "--version" || arg == "version" {
 			return runVersion(args[i+1:], stdout, stderr)
 		}
 		filteredArgs = append(filteredArgs, arg)

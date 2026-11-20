@@ -43,7 +43,36 @@ func (b *osDesktopBackend) LookPath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return canonicalPath(path), nil
+	resolved := canonicalPath(path)
+	if name == "xray" {
+		if unwrapped := resolveHomebrewXrayWrapper(resolved); unwrapped != "" {
+			return unwrapped, nil
+		}
+	}
+	return resolved, nil
+}
+
+// resolveHomebrewXrayWrapper unwraps Homebrew's bin/xray shell shim to its
+// underlying Mach-O binary in ../libexec/xray so Start and ProcessAlive
+// observe the same executable identity without wrapper exec races.
+func resolveHomebrewXrayWrapper(resolved string) string {
+	if filepath.Base(resolved) != "xray" || filepath.Base(filepath.Dir(resolved)) != "bin" {
+		return ""
+	}
+	info, err := os.Lstat(resolved)
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > 4096 {
+		return ""
+	}
+	raw, err := os.ReadFile(resolved)
+	if err != nil || !strings.HasPrefix(string(raw), "#!") || !strings.Contains(string(raw), "libexec/xray") {
+		return ""
+	}
+	candidate := filepath.Join(filepath.Dir(filepath.Dir(resolved)), "libexec", "xray")
+	cInfo, err := os.Stat(candidate)
+	if err != nil || !cInfo.Mode().IsRegular() {
+		return ""
+	}
+	return canonicalPath(candidate)
 }
 
 func (b *osDesktopBackend) Privileged() bool { return os.Geteuid() == 0 }
@@ -276,6 +305,7 @@ func darwinMappingFresh(mapping, socket os.FileInfo) bool {
 
 func (b *osDesktopBackend) Start(executable string, args []string, revision, configDigest string) (processIdentity, error) {
 	command := exec.Command(executable, args...)
+	command.Env = darwinStartCommandEnv(os.Environ(), executable)
 	command.Stdin = nil
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
@@ -488,6 +518,26 @@ func darwinCommandEnvironment(locale, timezone string) []string {
 		environment = append(environment, "TZ="+timezone)
 	}
 	return environment
+}
+
+func darwinStartCommandEnv(base []string, executable string) []string {
+	env := darwinRuntimeCommandEnv(base, executable)
+	if filepath.Base(executable) == "xray" && filepath.Base(filepath.Dir(executable)) == "libexec" {
+		hasAssetEnv := false
+		for _, entry := range env {
+			if strings.HasPrefix(entry, "XRAY_LOCATION_ASSET=") {
+				hasAssetEnv = true
+				break
+			}
+		}
+		if !hasAssetEnv {
+			shareDir := filepath.Join(filepath.Dir(filepath.Dir(executable)), "share", "xray")
+			if info, err := os.Stat(shareDir); err == nil && info.IsDir() {
+				env = append(env, "XRAY_LOCATION_ASSET="+shareDir)
+			}
+		}
+	}
+	return env
 }
 
 func canonicalPath(path string) string {

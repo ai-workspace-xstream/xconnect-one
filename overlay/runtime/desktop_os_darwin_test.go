@@ -183,3 +183,39 @@ func TestDarwinRuntimeCommandEnvPrependsHomebrewAndCommandDir(t *testing.T) {
 		t.Fatalf("PATH=%q, want %q", gotPath, want)
 	}
 }
+
+func TestResolveHomebrewXrayWrapperAndAssetEnv(t *testing.T) {
+	cellar := t.TempDir()
+	binDir := filepath.Join(cellar, "bin")
+	libexecDir := filepath.Join(cellar, "libexec")
+	shareDir := filepath.Join(cellar, "share", "xray")
+	for _, dir := range []string{binDir, libexecDir, shareDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrapperPath := filepath.Join(binDir, "xray")
+	libexecPath := filepath.Join(libexecDir, "xray")
+	if err := os.WriteFile(libexecPath, []byte("macho"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wrapperPath, []byte("#!/bin/bash\nexec \""+libexecPath+"\" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveHomebrewXrayWrapper(wrapperPath)
+	if got != canonicalPath(libexecPath) {
+		t.Fatalf("resolveHomebrewXrayWrapper=%q, want %q", got, canonicalPath(libexecPath))
+	}
+	env := darwinStartCommandEnv([]string{"PATH=/usr/bin"}, libexecPath)
+	wantAsset := "XRAY_LOCATION_ASSET=" + shareDir
+	var foundAsset bool
+	for _, entry := range env {
+		if entry == wantAsset {
+			foundAsset = true
+			break
+		}
+	}
+	if !foundAsset {
+		t.Fatalf("expected %q in env=%v", wantAsset, env)
+	}
+}
