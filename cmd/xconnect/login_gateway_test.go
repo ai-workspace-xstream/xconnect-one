@@ -1025,3 +1025,27 @@ func TestHandleRuntimePermissionErrorAndStripStateDirFlag(t *testing.T) {
 		t.Fatalf("expected manual sudo hint, got stderr=%s", stderr.String())
 	}
 }
+
+func TestJoinRejectsExpiredSessionWithActionableLoginHint(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := credential.SaveUserSession(stateDir, credential.UserSession{
+		Server:      "https://accounts.svc.plus",
+		Email:       "user@example.test",
+		UserID:      "u-expired",
+		AccessToken: "expired-jwt",
+		ExpiresAt:   time.Now().UTC().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := runWithFactories(context.Background(), []string{"join", "--state-dir", stateDir, "--no-browser"}, &stdout, &stderr, http.DefaultClient,
+		func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+		func(string) credential.Store { return &credential.MemoryStore{} },
+	)
+	if fault.Code(err) != fault.CodeAuthenticationFailed {
+		t.Fatalf("expected CodeAuthenticationFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "xconnect-one login") {
+		t.Fatalf("expected xconnect-one login guidance, got %v", err)
+	}
+}

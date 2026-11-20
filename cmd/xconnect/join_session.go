@@ -45,12 +45,18 @@ func runJoinWithSession(
 	httpClient *http.Client,
 	newCredentials credentialFactory,
 ) error {
+	if !session.ExpiresAt.IsZero() && !time.Now().UTC().Before(session.ExpiresAt) {
+		return fault.New(fault.CodeAuthenticationFailed, "login session expired; run 'xconnect-one login' to sign in again", nil)
+	}
 	client, err := controlplane.New(session.Server, session.AccessToken, httpClient)
 	if err != nil {
 		return err
 	}
 	gateways, err := client.ListGateways(ctx)
 	if err != nil {
+		if fault.Code(err) == fault.CodeAuthenticationFailed {
+			return fault.New(fault.CodeAuthenticationFailed, "login session expired or rejected; run 'xconnect-one login' to sign in again", err)
+		}
 		return err
 	}
 	gateways = filterGatewaysByNetwork(gateways, opts.NetworkID)

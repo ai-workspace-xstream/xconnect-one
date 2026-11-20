@@ -33,7 +33,7 @@ const (
 	// gateway network (e.g. net-ph-xconnect) to their account.
 	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
 	defaultVersion        = "v0.1.20"
-	defaultBuildNumber    = "21"
+	defaultBuildNumber    = "22"
 )
 
 var (

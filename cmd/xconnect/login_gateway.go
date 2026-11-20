@@ -953,8 +953,8 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 			if fault.Code(err) == fault.CodeRuntimePermission {
 				return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, err)
 			}
-			if fault.Code(err) == fault.CodeCredentialInvalid {
-				_, _ = fmt.Fprintln(stderr, "xconnect: stored device credential was rejected or revoked; run 'xconnect-one join' to re-enroll this device.")
+			if fault.Code(err) == fault.CodeCredentialInvalid || fault.Code(err) == fault.CodeDeviceSessionInvalid {
+				_, _ = fmt.Fprintln(stderr, "xconnect: stored device credential or signing key is out of date; run 'xconnect-one join' (or 'xconnect-one login' if session expired) to re-enroll this device.")
 				return err
 			}
 			if fault.Code(err) == fault.CodeAuthenticationFailed || fault.Code(err) == fault.CodeAccessDenied || fault.Code(err) == fault.CodeCredentialExpired || fault.Code(err) == fault.CodeCredentialMissing || fault.Code(err) == fault.CodeNotJoined {
@@ -982,8 +982,8 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 		if fault.Code(err) == fault.CodeRuntimePermission {
 			return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, err)
 		}
-		if fault.Code(err) == fault.CodeCredentialInvalid {
-			_, _ = fmt.Fprintln(stderr, "xconnect: stored device credential was rejected or revoked; run 'xconnect-one join' to re-enroll this device.")
+		if fault.Code(err) == fault.CodeCredentialInvalid || fault.Code(err) == fault.CodeDeviceSessionInvalid {
+			_, _ = fmt.Fprintln(stderr, "xconnect: stored device credential or signing key is out of date; run 'xconnect-one join' (or 'xconnect-one login' if session expired) to re-enroll this device.")
 		}
 		return err
 	}
