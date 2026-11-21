@@ -438,7 +438,12 @@ owned-resource cleanup. Never edit generated files while the runtime is active.
   universal full-tunnel or DNS-leak guarantee, automatic endpoint route
   exemption, or kill switch. The signed compiler currently supplies no DNS
   settings. Private-network reachability requires gateway forwarding and
-  return routing to be configured outside this CLI.
+  return routing to be configured outside this CLI. If controller
+  `AllowedIPs` include a default route (`0.0.0.0/0` or `::/0`), the client
+  refuses to install it as the host default and instead applies the overlay
+  CIDR intent (network CIDR, gateway CIDR, assigned address, mesh overlay).
+  Apply fails rather than forcing a default route when no overlay intent is
+  available.
 - V2 validates the signed policy reference, artifact digest, expiry and replay
   floor and records accepted policy metadata. It does **not** install a local
   firewall or verify gateway ACL enforcement. Gateway enforcement remains an
@@ -449,6 +454,14 @@ owned-resource cleanup. Never edit generated files while the runtime is active.
   macOS LaunchDaemon periodically sync, retry transient failures, and rebuild
   an unhealthy owned runtime. Linux `one join` enables the watcher when its
   systemd unit is installed; macOS uses `scripts/setup-xconnect-one-macos.sh`.
+  Linux `up` uses systemd-run only when a live system systemd manager is
+  detected (`/run/systemd/system`, `/run/systemd/private`, and PID 1 `comm`
+  equal to `systemd`). On hosts whose PID 1 is tini or another non-systemd
+  init, the CLI supervises Xray and the path manager as detached processes
+  with PID start-token identity, SIGTERM/SIGKILL cleanup, and 0600 stderr
+  logs under `$state-dir/runtime/logs`. It does not install or emulate
+  systemd. This is an unreleased development change on top of v0.1.20
+  (build 25); it is not an official GitHub release.
   Revocation still requires a successful control-plane sync.
 - Runtime apply rollback covers local activation failures. A later ACK or
   state-persistence failure can leave a newly active runtime with older saved
