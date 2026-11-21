@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,7 +17,9 @@ import (
 	"time"
 )
 
-type osDesktopBackend struct{}
+type osDesktopBackend struct {
+	logDirectory string
+}
 
 func newOSDesktopBackend() *osDesktopBackend { return &osDesktopBackend{} }
 
@@ -52,36 +53,6 @@ func (b *osDesktopBackend) Run(ctx context.Context, name string, args ...string)
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	return command.Run()
-}
-
-func (b *osDesktopBackend) Start(executable string, args []string, revision, configDigest string) (processIdentity, error) {
-	unit := fmt.Sprintf("xconnect-one-xray-%d-%d", os.Getpid(), time.Now().UnixNano())
-	command := exec.Command("systemd-run", systemdRunArguments(unit, executable, args)...)
-	command.Stdin = nil
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
-		return processIdentity{}, err
-	}
-	pid, err := systemdMainPID(unit, 3*time.Second)
-	if err != nil {
-		_ = exec.Command("systemctl", "stop", unit).Run()
-		return processIdentity{}, err
-	}
-	identity := processIdentity{
-		PID:          pid,
-		Executable:   canonicalPath(executable),
-		ConfigPath:   configArgument(args),
-		ConfigSHA256: configDigest,
-		Revision:     revision,
-	}
-	startToken, err := linuxProcessStartToken(identity.PID)
-	if err != nil {
-		_ = exec.Command("systemctl", "stop", unit).Run()
-		return processIdentity{}, err
-	}
-	identity.StartToken = startToken
-	return identity, nil
 }
 
 func systemdRunArguments(unit, executable string, args []string) []string {
@@ -159,6 +130,7 @@ func (b *osDesktopBackend) Stop(identity processIdentity) error {
 	if err != nil {
 		return err
 	}
+	_ = syscall.Kill(-identity.PID, syscall.SIGTERM)
 	if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
@@ -177,6 +149,7 @@ func (b *osDesktopBackend) Stop(identity processIdentity) error {
 	if err != nil || !alive {
 		return err
 	}
+	_ = syscall.Kill(-identity.PID, syscall.SIGKILL)
 	return process.Signal(syscall.SIGKILL)
 }
 

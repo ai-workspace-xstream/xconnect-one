@@ -133,6 +133,14 @@ ping -c 3 10.66.0.1
 ### `up` 参数
 - `--gateway`：指定或切换目标网关（支持 Gateway ID、域名或 URL 如 `https://ph-xconnect-gateway-01.svc.plus`）
 - `--bootstrap`：启动前自动检查/安装受管 Xray 运行时
+
+### Linux 运行时与非 systemd 主机
+
+`up` 在 Linux 上仅当系统 systemd 管理器真实在线时使用 `systemd-run`（依据 `/run/systemd/system`、`/run/systemd/private` 以及 PID 1 的 `comm` 是否为 `systemd`，而不是看有没有 `systemd-run` 二进制）。在 tini 等非 systemd 环境中，CLI 会以独立会话托管 Xray（及 path manager）：记录 PID 与 start-token 身份、在 `~/.xconnect-one/runtime/logs`（或指定 `--state-dir` 下的 `runtime/logs`）写入权限为 0600 的 stderr 日志，并在 `down`/失败回滚时 SIGTERM/SIGKILL 回收，避免残留孤儿进程。不会安装或伪装 systemd。
+
+若控制面下发的 WireGuard `AllowedIPs` 包含默认路由（`0.0.0.0/0` 或 `::/0`），客户端不会把它安装成主机默认路由，而改为叠加层网段（网络 CIDR、网关 CIDR、本机地址、mesh overlay）。若无法得出叠加层意图，则拒绝启动，以免劫持主机出口。
+
+当前源码版本号为 v0.1.20 build 25，属于未发布的开发构建，不是官方 Release 包。
 - `--watch` / `--interval`：持续运行并按周期向控制面同步配置（默认 `1m`）
 - `--device-id` / `--name`：自定义设备 ID 与显示名称
 - `--state-dir`：状态目录（默认 `~/.xconnect-one`，无权限时自动回退到用户级目录）

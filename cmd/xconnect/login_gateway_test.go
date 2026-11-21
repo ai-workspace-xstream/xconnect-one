@@ -586,9 +586,9 @@ func TestLoginInteractivePromptsServerStateDirPasswordAndGateway(t *testing.T) {
 			var req controlplane.DeviceEnrollRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			_ = json.NewEncoder(w).Encode(controlplane.JoinTokenExchangeResponse{
-				EnrollmentToken:  "xenr_" + strings.Repeat("A", 43),
-				TokenType:        "Bearer",
-				ExpiresAt:        now.Add(time.Hour),
+				EnrollmentToken: "xenr_" + strings.Repeat("A", 43),
+				TokenType:       "Bearer",
+				ExpiresAt:       now.Add(time.Hour),
 				DeviceCredential: controlplane.DeviceCredential{
 					CredentialID: "xdcid_11111111111111111111111111111111",
 					Credential:   "xdc_11111111111111111111111111111111.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -596,9 +596,9 @@ func TestLoginInteractivePromptsServerStateDirPasswordAndGateway(t *testing.T) {
 					ExpiresAt:    now.Add(24 * time.Hour),
 					Scope:        []string{credential.ScopeSessionMint, credential.ScopeRotate, credential.ScopeDeviceRevoke},
 				},
-				Device:           model.Device{ID: req.DeviceID},
-				Network:          model.Network{ID: req.NetworkID},
-				SigningKeys:      []signedconfig.SigningKey{{KeyID: "key-gw-test", Algorithm: "Ed25519", PublicKey: pubKeyB64, Status: "current", NotBefore: signedconfig.CanonicalTime{Time: now.Add(-time.Hour)}}},
+				Device:      model.Device{ID: req.DeviceID},
+				Network:     model.Network{ID: req.NetworkID},
+				SigningKeys: []signedconfig.SigningKey{{KeyID: "key-gw-test", Algorithm: "Ed25519", PublicKey: pubKeyB64, Status: "current", NotBefore: signedconfig.CanonicalTime{Time: now.Add(-time.Hour)}}},
 			})
 		case "/api/overlay/v1/enrollment/signed-config":
 			w.Header().Set("Content-Type", controlplane.SignedConfigV2MediaType)
@@ -1061,5 +1061,14 @@ func TestFormatFaultErrorPreservesOperationChain(t *testing.T) {
 	}
 	if strings.Contains(got, "permission") {
 		t.Fatalf("must not leak raw non-fault cause error: %q", got)
+	}
+
+	hinted := fault.New(fault.CodeRuntimeApplyFailed, "start Xray runtime", &overlayruntime.HintedError{Hint: "systemd is not the init system"})
+	got = formatFaultError(hinted)
+	if !strings.Contains(got, "start Xray runtime") || !strings.Contains(got, "systemd is not the init system") {
+		t.Fatalf("expected safe hint, got %q", got)
+	}
+	if !strings.Contains(got, "runtime_apply_failed") {
+		t.Fatalf("expected fault code, got %q", got)
 	}
 }
