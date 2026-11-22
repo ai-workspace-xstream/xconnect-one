@@ -267,11 +267,11 @@ func TestValidateSyncInterval(t *testing.T) {
 
 type fakeSupervisableRuntime struct {
 	*overlayruntime.Fake
-	health         overlayruntime.DataPlaneStatus
-	restartErr     error
-	restartCalls   atomic.Int32
-	onRestart      func()
-	onDown         func()
+	health       overlayruntime.DataPlaneStatus
+	restartErr   error
+	restartCalls atomic.Int32
+	onRestart    func()
+	onDown       func()
 }
 
 func (f *fakeSupervisableRuntime) DataPlaneHealth(context.Context) (overlayruntime.DataPlaneStatus, error) {
