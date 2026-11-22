@@ -48,24 +48,15 @@ sudo env XCONNECT_ONE_STATE_DIR="$HOME/.xconnect-one-user" \
 ### 2. Linux (Debian / Ubuntu / Fedora)
 
 ```bash
-# One-shell install (compatible with Debian, Ubuntu, and Fedora; auto-installs git/go if missing)
+# One-shell install (uses distro repo packages; GOTOOLCHAIN=auto handles Go version)
 set -euo pipefail
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
-if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+if ! command -v git >/dev/null 2>&1 || ! command -v go >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
-    $SUDO apt-get update && $SUDO apt-get install -y --no-install-recommends git ca-certificates curl tar
+    $SUDO apt-get update && $SUDO apt-get install -y --no-install-recommends git ca-certificates golang
   elif command -v dnf >/dev/null 2>&1; then
-    $SUDO dnf install -y git ca-certificates curl tar
+    $SUDO dnf install -y git ca-certificates golang
   fi
-fi
-if ! command -v go >/dev/null 2>&1; then
-  case "$(uname -m)" in
-    x86_64|amd64) ARCH="amd64" ;;
-    aarch64|arm64) ARCH="arm64" ;;
-    *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
-  esac
-  curl -fsSL "https://go.dev/dl/go1.26.4.linux-${ARCH}.tar.gz" | $SUDO tar -C /usr/local -xzf -
-  export PATH="/usr/local/go/bin:$PATH"
 fi
 rm -rf /tmp/xconnect-one
 git clone --depth 1 https://github.com/ai-workspace-xstream/xconnect-one.git /tmp/xconnect-one
