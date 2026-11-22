@@ -20,7 +20,7 @@ on a sibling checkout. It does not change or replace `xconnect-app`.
 
 ## Quick start
 
-For enrolled macOS clients with root autostart and runtime recovery, see [macOS autostart and runtime recovery](docs/macos-runtime-setup.md). For self-hosted node setup and invite-based verification, see [docs/self-hosted-install-and-validation.md](docs/self-hosted-install-and-validation.md).
+For enrolled macOS clients with root autostart and runtime recovery, see [macOS autostart and runtime recovery](docs/macos-runtime-setup.md). For full cross-platform embedded single-binary installation (macOS / Linux / Windows / Docker containers / XConnect-Gateway), see [docs/cross-platform-install-and-deployment.md](docs/cross-platform-install-and-deployment.md). For self-hosted node setup and invite-based verification, see [docs/self-hosted-install-and-validation.md](docs/self-hosted-install-and-validation.md).
 
 ### Install the CLI
 
