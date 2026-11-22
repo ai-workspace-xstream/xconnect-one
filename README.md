@@ -1,483 +1,109 @@
 # XConnect-One
 
-XConnect-One is the independently released controlled-endpoint client for the
-XConnect Zero Trust network. It receives a device-bound configuration from the
-XConnect Zero API in `accounts`, generates protected local WireGuard/Xray
-configuration, starts the client data plane, and verifies local readiness before
-acknowledging the applied generation.
+**XConnect-One** is the single-binary, cross-platform endpoint client for **XConnect Zero** — a self-hostable Zero Trust WireGuard overlay carried over VLESS/XHTTP TLS (`443`).
 
-XConnect Zero owns the control plane and `portal` owns its WebUI. XConnect APP
-remains independent: it may optionally invoke the versioned `app-bridge` plugin
-interface, but it does not own One's CLI, protocol state machine, credentials,
-or private-network runtime.
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Independent Go CLI for a private WireGuard overlay carried over an external
-Xray VLESS/XHTTP TLS connection. Module: `github.com/ai-workspace-xstream/XConnect-One`.
-This repository contains no Flutter app, FFI bridge, embedded Xray, or dependency
-on a sibling checkout. It does not change or replace `xconnect-app`.
+- **Online Demo**: <https://console.svc.plus/panel/xconnect-zero>
+- **Gateway Repository**: <https://github.com/ai-workspace-xstream/xconnect-gateway>
+- **License**: Apache 2.0 — 100% open source and self-host friendly.
 
-> Chinese CLI user guide: [docs/cli-user-guide.zh-CN.md](docs/cli-user-guide.zh-CN.md)
+---
 
-## Quick start
+## Key Features
 
-For enrolled macOS clients with root autostart and runtime recovery, see [macOS autostart and runtime recovery](docs/macos-runtime-setup.md). For full cross-platform embedded single-binary installation (macOS / Linux / Windows / Docker containers / XConnect-Gateway), see [docs/cross-platform-install-and-deployment.md](docs/cross-platform-install-and-deployment.md). For self-hosted node setup and invite-based verification, see [docs/self-hosted-install-and-validation.md](docs/self-hosted-install-and-validation.md).
+- **Single-Binary Embedded Runtime (`--runtime=embedded`, default)**: Bundles minimal `xray-core` (`dokodemo-door` + `vless/xhttp/tls`, excluding ~29 MB geo assets by default) and `wireguard-go` (in-process UAPI) with native TUN/route configurators — zero external `wg-quick`, `wg`, or `xray` binaries required.
+- **Coexists with AI Proxy Acceleration**: Runs WireGuard over HTTPS (`443`, VLESS/XHTTP + TLS) without hijacking your default route, allowing seamless interconnection of Linux VPS, Grok Bot containers, and home macOS/Windows machines alongside existing AI proxy tools.
+- **Cross-Platform & Container Native**: Supports **macOS**, **Linux (systemd & non-systemd Docker containers)**, and **Windows (Wintun)**. TUN handles are fd-scoped and automatically cleaned up on exit.
+- **Zero-Trust Security & Resilience**: Ed25519-signed configurations, automatic network-change / sleep-wake recovery with millisecond Level-1 transport hot-restart, and optional fallback to `--runtime=external`.
 
-### Install the CLI
+---
 
-Install the latest released binary (`v0.1.19`) via `install.svc.plus` (verifies `SHA256SUMS` before installing):
+## Quick Start
 
-**macOS / Linux:**
+### 1. macOS (Apple Silicon / Intel)
 
-```sh
-curl -fsSL https://install.svc.plus/xconnect-one | \
-  sudo env XCONNECT_ONE_VERSION=v0.1.19 bash
+```bash
+# Build from source (or install release binary)
+git clone https://github.com/ai-workspace-xstream/xconnect-one.git && cd xconnect-one
+CGO_ENABLED=0 go build -trimpath -o /opt/homebrew/bin/xconnect-one ./cmd/xconnect
+
+# Login, join gateway, and start
+xconnect-one login
+xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
+sudo xconnect-one up
 ```
 
-**Windows (elevated PowerShell):**
+Configure root LaunchDaemon autostart:
+
+```bash
+sudo env XCONNECT_ONE_STATE_DIR="$HOME/.xconnect-one-user" \
+  XCONNECT_ONE_BINARY=/opt/homebrew/bin/xconnect-one \
+  bash scripts/setup-xconnect-one-macos.sh
+```
+
+### 2. Linux (VPS / Desktop)
+
+```bash
+git clone https://github.com/ai-workspace-xstream/xconnect-one.git && cd xconnect-one
+CGO_ENABLED=0 go build -trimpath -o /usr/local/bin/xconnect-one ./cmd/xconnect
+
+xconnect-one login
+xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
+sudo xconnect-one up
+```
+
+### 3. Docker / Non-systemd Containers (e.g. Grok Bot)
+
+Run the single `linux/amd64` or `linux/arm64` binary inside any minimal container with TUN capability:
+
+```bash
+docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
+  xconnect-one up --state-dir /var/lib/xconnect-one
+```
+
+### 4. Windows (Windows 10 / 11 / Server)
+
+1. Place `xconnect-one.exe` (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0`) and `amd64` [`wintun.dll`](https://www.wintun.net/) in the same directory.
+2. Run in an **Administrator** PowerShell:
 
 ```powershell
-$env:XCONNECT_ONE_VERSION = 'v0.1.19'
-irm https://install.svc.plus/xconnect-one.ps1 | iex
+.\xconnect-one.exe login
+.\xconnect-one.exe join --gateway https://ph-xconnect-gateway-01.svc.plus
+.\xconnect-one.exe up
 ```
 
-> **Binary name note**: The installers install the CLI binary as `xconnect` at `/usr/local/bin/xconnect` (Linux / Intel macOS), `/opt/homebrew/bin/xconnect` (Apple Silicon macOS), or `%ProgramFiles%\XConnect\xconnect-windows-amd64.exe` (Windows). Following [docs/cli-user-guide.zh-CN.md](docs/cli-user-guide.zh-CN.md), examples below use `xconnect-one` to denote the XConnect-One CLI (`xconnect`, or an `xconnect-one` alias/symlink).
+> Invite-based enrollment also works on all platforms:
+> `xconnect-one join "xconnect://join/<token>?controller=https%3A%2F%2Faccounts.svc.plus"`
 
-### Core CLI commands
+---
 
-`xconnect-one` consolidates account authentication, gateway discovery, device enrollment, signed configuration verification, and Xray + WireGuard tunnel orchestration into three core commands:
+## Common Commands
 
-| Command | Purpose | Common usage |
-|---|---|---|
-| `xconnect-one login` | Authenticate with the control plane (`https://accounts.svc.plus` via email/password + MFA TOTP, or browser OAuth `--web`), optionally enrolling a gateway immediately | `xconnect-one login` |
-| `xconnect-one up` | Select/enroll a gateway (if needed), fetch & verify signed configuration, and start the Xray + WireGuard tunnel | `xconnect-one up` |
-| `xconnect-one down` | Stop the tunnel and clean up the virtual interface while retaining login session and gateway selection for one-command reconnect | `xconnect-one down` |
+| Command | Description |
+| :--- | :--- |
+| `xconnect-one login` | Authenticate with `accounts.svc.plus` |
+| `xconnect-one join [--gateway <url>]` | Enroll device and fetch signed config |
+| `xconnect-one up [--runtime=embedded\|external]` | Start overlay tunnel and supervision loop |
+| `xconnect-one down` | Stop tunnel and clean up interface/routes |
+| `xconnect-one status` / `diagnose` | Inspect tunnel status and runtime health |
 
-Check the installed client version anytime with `xconnect-one version` or `xconnect-one -v` (`--version`, `version --short`).
+---
 
-### Four-tier gateway selection priority
+## Documentation
 
-When running `xconnect-one up` (or `xconnect-one login --gateway`), the CLI resolves the target gateway in the following priority order:
+| Document | Topic |
+| :--- | :--- |
+| [docs/cross-platform-install-and-deployment.md](docs/cross-platform-install-and-deployment.md) | Full installation & deployment guide (macOS, Linux, Docker, Windows, Gateway) |
+| [docs/cli-user-guide.zh-CN.md](docs/cli-user-guide.zh-CN.md) | Chinese CLI user guide |
+| [docs/macos-runtime-setup.md](docs/macos-runtime-setup.md) | macOS LaunchDaemon autostart & recovery |
+| [docs/windows-runtime.md](docs/windows-runtime.md) | Windows runtime & Wintun notes |
+| [docs/self-hosted-install-and-validation.md](docs/self-hosted-install-and-validation.md) | Self-hosted deployment & validation |
+| [docs/self-registration.md](docs/self-registration.md) | Device self-registration workflow |
+| [docs/zero-lab.md](docs/zero-lab.md) | Local Zero lab testing |
 
-1. **Explicit `--gateway <id|host>` (highest priority)**
-   Pass a **Gateway ID**, **endpoint host**, or **transport server name** via `--gateway` to enroll or switch gateways at any time:
-   ```sh
-   # By endpoint host
-   xconnect-one up --gateway ph-xconnect-gateway-01.svc.plus
+---
 
-   # By Gateway ID
-   xconnect-one up --gateway ph-xconnect-gateway-01
+## License
 
-   # Enroll immediately during login
-   xconnect-one login --gateway ph-xconnect-gateway-01.svc.plus
-   ```
-
-2. **Remembered choice (`state.json` and device credential)**
-   If local device credentials and `state.json` already exist and no new `--gateway` flag is supplied, `xconnect-one up` reuses the previously selected gateway, synchronizes the latest signed configuration from the control plane, and starts the tunnel with **zero extra prompts**.
-
-3. **Single-gateway auto-select**
-   On first enrollment without `--gateway`, the CLI queries `GET /api/overlay/v1/gateways`. If the account has only one available gateway, it is **automatically selected and enrolled**.
-
-4. **Multiple gateways (interactive TTY prompt / non-TTY error)**
-   On first enrollment without `--gateway` when multiple gateways are available:
-   - **Interactive terminal (TTY)**: Prints numbered gateways and prompts for selection (pressing Enter defaults to the first healthy gateway):
-     ```text
-     Available gateways:
-       [1] ph-xconnect-gateway-01 (ph-xconnect-gateway-01.svc.plus, net-ph-xconnect)
-       [2] tw-xconnect-gateway-01 (tw-xconnect-gateway-01.svc.plus, net-tw-xconnect)
-     Select gateway [1]:
-     ```
-   - **Non-interactive (non-TTY)**: Returns an error listing all available gateway IDs and hosts, prompting you to pass `--gateway`.
-
-### Common workflows
-
-#### 1. Interactive first-time connection (recommended)
-
-```sh
-# 1. Authenticate interactively against accounts.svc.plus (email, password, MFA TOTP)
-xconnect-one login
-
-# 2. Connect (auto-selects a single gateway, or prompts in TTY if multiple exist)
-xconnect-one up
-```
-
-#### 2. Non-interactive / CI scripted connection
-
-```sh
-# Read password from stdin with TOTP MFA and immediately bind a gateway
-printf "%s" "<password>" | xconnect-one login \
-  --email user@example.com \
-  --password-stdin \
-  --totp 123456 \
-  --server https://accounts.svc.plus \
-  --gateway ph-xconnect-gateway-01.svc.plus
-
-# Bring up the tunnel
-xconnect-one up
-```
-
-> **macOS note**: In headless terminals or automation without an unlocked login Keychain, set `XCONNECT_CREDENTIAL_BACKEND=file` to store protected credentials under `~/.xconnect-one/protected/` (e.g. `/Users/<user>/.xconnect-one/protected/`). Running `up` and `down` on macOS/Linux requires `root` (`sudo`) privileges to create and manage the virtual tunnel interface (`utun` / WireGuard).
-
-#### 3. Browser OAuth login (`--web`)
-
-Standard `xconnect-one login` (without `--web`) authenticates directly against `https://accounts.svc.plus` using email, password, and MFA TOTP. Adding `--web` launches browser OAuth/SSO via `--provider` (which defaults to `google` and supports providers such as `google` and `github`):
-
-```sh
-xconnect-one login --web --provider google
-xconnect-one up
-```
-
-#### 4. Daily start/stop, status, and full logout
-
-```sh
-# Disconnect tunnel (keeps login session and enrolled gateway for next `up`)
-xconnect-one down
-
-# Disconnect tunnel and clear local user login session
-xconnect-one down --logout
-
-# Check login session or local tunnel status
-xconnect-one login --status
-xconnect-one status
-```
-
-### WireGuard over VLESS verification
-
-After `xconnect-one up` succeeds, overlay traffic flows over the following path:
-
-- **Client**: `wireguard-go` (macOS `utun*`) / WireGuard interface -> local Xray -> VLESS over XHTTP/TLS (`TCP 443`, path `/xconnect`)
-- **Gateway**: Edge proxy (`:443 /xconnect`) -> Gateway Xray -> loopback `127.0.0.1:51820` -> kernel WireGuard (`xconzero0`)
-
-Verify tunnel readiness and overlay reachability locally:
-
-```sh
-# Check the virtual interface IP (e.g., 10.66.0.2)
-ifconfig | grep -A 2 "10.66.0"
-
-# Test gateway overlay connectivity
-ping -c 3 10.66.0.1
-
-# Optional: inspect CLI status and WireGuard peer handshakes
-xconnect-one status
-sudo wg show
-```
-
-### Key CLI flags reference
-
-#### `login` flags
-- `--server`: Control-plane base URL (default `https://accounts.svc.plus`; prompted with Enter-to-confirm in interactive TTY mode when omitted)
-- `--email`: Login email or username (optional in interactive TTY mode; prompted when omitted)
-- `--password-stdin`: Read password from standard input
-- `--show-password`: Echo password input visibly in terminal (insecure; by default terminal password/MFA prompts hide input)
-- `--totp`: 6-digit MFA TOTP code (optional; prompted with hidden input when MFA is required)
-- `--web`: Authenticate via browser OAuth / SSO
-- `--provider`: OAuth provider for `--web` login (e.g., `google`, `github`; default `google`)
-- `--gateway`: Gateway ID, endpoint host, or URL (e.g., `https://ph-xconnect-gateway-01.svc.plus`) to enroll immediately after login; in interactive TTY mode when omitted, lists server/known gateways with optional skip
-- `--device-id`: Stable local device ID (used with `--gateway`)
-- `--name`: Device display name (used with `--gateway`)
-- `--status`: Display current login session status
-- `--json`: Output login status as JSON
-- `--state-dir`: Local state directory (default `~/.xconnect-one`, automatically falling back to `~/.xconnect-one-user` if `~/.xconnect-one` is owned by root or non-writable by the current user)
-
-#### `up` flags
-- `--gateway`: Target Gateway ID, endpoint host, or URL (e.g., `https://ph-xconnect-gateway-01.svc.plus`) to enroll or switch to
-- `--bootstrap`: Check/install the approved managed Xray runtime (and platform WireGuard packages) before starting
-- `--runtime-release-base-url`: Approved Xray release mirror base URL (or `XCONNECT_RUNTIME_RELEASE_BASE_URL`)
-- `--watch`: Keep running and synchronize configuration periodically
-- `--interval`: Watch sync interval (`15s` to `100s`; default `1m`)
-- `--device-id`: Stable local device ID
-- `--name`: Device display name
-- `--state-dir`: Local state directory (default `~/.xconnect-one`, with safe user fallback when `~/.xconnect-one` is inaccessible)
-
-#### `down` flags
-- `--logout`: Also clear the local user login session after stopping the tunnel
-- `--state-dir`: Local state directory (default `~/.xconnect-one`)
-
-## Supported client and Gateway platforms
-
-XConnect One is the controlled-client product for Linux, macOS, Windows, iOS
-and Android. The standalone CLI is currently the supported Linux/macOS/Windows
-form; iOS and Android use a mobile client or the XConnect APP plugin surface
-with the same Zero enrollment and signed-configuration contract. XConnect
-Gateway is a separate relay/service and currently supports Linux Server only.
-
-## Architecture and ownership
-
-XConnect Zero's API and persistence belong to **Accounts**, outside this
-repository. The deployed WebUI portal is **`/panel/xconnect-zero`** and remains
-the user-facing place to select a network, Gateway and One platform and issue
-short-lived invitations. XConnect-One is the independent Linux/macOS/Windows
-CLI consumer of those APIs. Any integration with
-`xconnect-app` is through plugin composition only, not a source merge or shared
-mutable state. This extraction does not implement that plugin integration.
-
-## Build and test
-
-Go 1.26.4 or newer is required. All imported packages are from the standard
-library; no `go.sum` or local `replace` directive is needed.
-
-```sh
-go test ./...
-go vet ./...
-go build -trimpath -o dist/xconnect ./cmd/xconnect
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/xconnect-linux-amd64 ./cmd/xconnect
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/xconnect-linux-arm64 ./cmd/xconnect
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o dist/xconnect-macos-arm64 ./cmd/xconnect
-CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -o dist/xconnect-macos-amd64 ./cmd/xconnect
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o dist/xconnect-windows-amd64.exe ./cmd/xconnect
-```
-
-The CI workflow tests Linux, macOS and Windows builds, runs the race detector
-and vet, and publishes their controlled-client binaries. Tests use HTTP
-fixtures and injected runtime backends; they do not establish a live VPN or
-change the host network.
-
-## Managed runtime bootstrap
-
-Starting with v0.1.10 on Linux and v0.1.11 on macOS/Windows, controlled clients
-can explicitly bootstrap the approved managed Xray runtime and required
-WireGuard packages:
-
-```sh
-sudo /usr/local/bin/xconnect runtime bootstrap --state-dir /var/lib/xconnect-one
-sudo /usr/local/bin/xconnect join --bootstrap --state-dir /var/lib/xconnect-one \
-  'xconnect://join/REPLACE_WITH_SHORT_LIVED_INVITE'
-```
-
-Bootstrap is never implicit: it requires administrator privileges and either the explicit
-`runtime bootstrap` command or `up --bootstrap` / `join --bootstrap` / `sync --bootstrap`. The downloaded Xray
-archive is pinned and checksum-verified; its executable stays under the
-One-owned state directory. Debian/Ubuntu uses `apt`, macOS uses a trusted
-user-owned Homebrew installation for `wireguard-tools` and `wireguard-go`, and
-Windows uses `winget` for WireGuard for Windows when it is missing.
-
-When bootstrap is disabled, compatible `xray`, `wg`, and `wg-quick` executables
-must already exist in a trusted `PATH`. Xray remains an external process rather
-than a linked library. The runtime checks every generated configuration using
-`xray run -test -config` before activation.
-
-The host needs WireGuard kernel support, the tools used by `wg-quick` (including
-its shell and route-management tools), readable Linux `/proc`, and effective
-UID 0. Merely granting network capabilities is insufficient for the current
-root check. DNS settings in a legacy configuration may also require the
-resolver integration used by `wg-quick`. Keep the control plane and gateway
-reachable under the routes provided by the controller.
-
-An independently deployed, compatible Accounts overlay controller must supply
-enrollment, device sessions, signing keys, signed configuration and ACK APIs.
-The gateway must accept the issued VLESS identity and forward its UDP traffic
-to WireGuard, with this device's WireGuard public key, address, return routes
-and access policy provisioned. This repository does not deploy either service.
-
-The macOS controlled-client runtime is documented in
-[docs/macos-controlled-client-integration.md](docs/macos-controlled-client-integration.md).
-It uses the same external-runtime contract as Linux: One starts the signed
-Xray and WireGuard processes it owns. It neither requires nor implements an
-XConnect APP host adapter or Packet Tunnel handoff.
-
-## macOS prerequisites and installation
-
-面向自建节点的安装、加入和数据面验证见
-[docs/self-hosted-install-and-validation.md](docs/self-hosted-install-and-validation.md)。
-其中的 `curl https://install.svc.plus/xconnect-one | bash` 入口只安装
-One CLI；Xray、WireGuard 和 Zero 邀请仍由节点管理员分别提供。
-
-Run `runtime bootstrap` to install the checksum-pinned managed Xray and verify
-the external `wg`, `wg-quick`, and `wireguard-go` tools. On macOS the supported
-Homebrew toolchain is installed as the Homebrew owner rather than root.
-Build the binary for
-the host architecture, then install the checked release binary on the command
-path before enrollment. On Apple Silicon macOS, use `/opt/homebrew/bin`; use
-`/usr/local/bin` on Linux and Intel macOS:
-
-```sh
-sudo install -d -m 0755 /opt/homebrew/bin
-sudo install -m 0755 dist/xconnect-macos-arm64 /opt/homebrew/bin/xconnect
-sudo /opt/homebrew/bin/xconnect diagnose --state-dir /var/lib/xconnect-one
-```
-
-The command uses its inherited executable path to locate external runtimes.
-Before running it with `sudo`, ensure the administrator environment can find
-the trusted Xray and WireGuard executables (or use the deployment mechanism to
-place them in an administrator-visible path). The CLI creates only its named,
-owned WireGuard interface and files beneath its explicit state directory; it
-does not read, alter, or rely on XConnect APP state.
-
-## Windows prerequisites
-
-See [docs/windows-runtime.md](docs/windows-runtime.md). Windows uses the same
-CLI lifecycle and signed configuration contract as Linux and macOS, but
-requires an elevated native `amd64` process, external `xray.exe`, and WireGuard
-for Windows' `wireguard.exe` and `wg.exe`. The CLI does not install or update
-those external runtimes.
-
-## Bounded desktop UAT verification
-
-For an already-enrolled macOS or Windows client, the repository includes a
-bounded verification kit in [docs/desktop-uat-verification.md](docs/desktop-uat-verification.md).
-It accepts an explicit CLI binary path and dedicated state directory, then
-checks `sync`, exact device/network identity in owned `status`, external
-runtime presence, the exact gateway WireGuard peer's latest handshake, one
-literal overlay target, and one HTTP response marker. It reports `PASS`,
-`FAIL`, or `UNVERIFIED`; it does not join, install runtimes, change DNS, add
-routing beyond the CLI's `sync`, or use remote execution.
-
-## One self-registration
-
-The standalone binary supports invite-free, owner-credential-free
-self-registration on Linux, macOS and Windows. See
-[docs/self-registration.md](docs/self-registration.md) for the HTTPS contract,
-private resumable state, pending safety boundary, and usage of
-`xconnect register --controller ... --network ...`. Pending registration never
-starts an external runtime; approval reuses the formal signed-config, apply,
-and ACK enrollment path.
-
-## Invite enrollment, sync, and advanced lifecycle (`join` / `sync` / `leave`)
-
-For invite-based or automated deployments without an interactive user account login, run these commands on the Linux host after installing the built binary as
-`/usr/local/bin/xconnect`. Replace the invite with one issued by your controller.
-Use the same explicit **absolute** state directory and operating user for every
-command. Do not share that directory with another installation or the app.
-
-```sh
-sudo /usr/local/bin/xconnect join --state-dir /var/lib/xconnect-one \
-  --device-id private-laptop --name private-laptop \
-  'xconnect://join/REPLACE_WITH_ISSUED_TOKEN?controller=https%3A%2F%2Fcontroller.example'
-
-sudo /usr/local/bin/xconnect sync --state-dir /var/lib/xconnect-one
-sudo /usr/local/bin/xconnect status --state-dir /var/lib/xconnect-one
-sudo /usr/local/bin/xconnect diagnose --state-dir /var/lib/xconnect-one
-sudo /usr/local/bin/xconnect down --state-dir /var/lib/xconnect-one
-sudo /usr/local/bin/xconnect sync --state-dir /var/lib/xconnect-one
-```
-
-The invite is a one-time secret: avoid exposing it in shell history, shared
-terminal recordings or process listings. Invite enrollment is the durable
-device-credential path needed for subsequent `sync`. The token above is a
-placeholder, not a usable invitation.
-
-Both `join` and `sync` apply the configuration and start the tunnel. There is
-no separate `generate` command or offline export mode. The sync sequence is:
-
-1. Load the bound device credential and obtain/reuse an enrollment session.
-2. Fetch, verify and compile signed configuration, enforcing the generation floor.
-3. Generate private Xray/WireGuard files, validate Xray, start Xray, verify its
-   loopback socket ownership, run `wg-quick up`, and check `wg show`.
-4. Read back local runtime state, send the application ACK, and persist state.
-
-An already-current healthy revision avoids restarting the runtime. Offline cached `up`
-without control-plane verification is disabled: when running `up` (with an enrolled device
-or login session) or `sync`, the CLI always fetches and verifies fresh signed configuration
-before starting the tunnel, because saved compiled state cannot prove current signature
-expiry and may predate an unacknowledged active revision. `down` retains enrollment state
-(and login session unless `--logout` is passed); use `up` or `sync` to verify and restart.
-
-For a controller that supports policy-bound SignedConfig v2, opt in explicitly:
-
-```sh
-sudo /usr/local/bin/xconnect sync --signed-config-v2 --state-dir /var/lib/xconnect-one
-sudo /usr/local/bin/xconnect credential rotate --state-dir /var/lib/xconnect-one
-sudo /usr/local/bin/xconnect leave --state-dir /var/lib/xconnect-one
-```
-
-The v2 option must be supplied on each sync; it is not a persisted CLI preference.
-V2 requests do not fall back if the server lacks that capability. Normal `leave`
-uses the device credential to request revocation before local cleanup; a receipt
-can report that gateway policy reconciliation is still pending. `leave
---local-only` removes local owned state without revoking the remote device.
-
-Account-token enrollment remains available through `join --server URL
---token-file PATH --config-contract signed`, with optional `--network-id` and
-`--node-id`. It is a compatibility path and does not itself provide the durable
-invite credential required by `sync`. The inherited default server is
-`https://accounts.svc.plus`; specify your own controller explicitly. Account
-commands also accept `XCONNECT_TOKEN`, but a protected token file avoids relying
-on environment preservation across `sudo`.
-
-Other inherited commands are `admin invite create` and `policy explain` (both
-use account credentials). Subcommands accept `-h` to print flags, although the
-inherited flag handler returns a nonzero exit status for help. Successful
-commands produce JSON; errors use `error[code]` and exit status 1.
-
-## Security and stored state
-
-The extraction retains Ed25519 signature verification, configuration ownership
-and expiry checks on fetch, generation/digest replay protection, session proofs,
-credential rotation recovery, revocation replay state, operation locks and
-runtime identity checks. Invites require signed configuration. Account-token
-`join` defaults to `auto`, which permits legacy fallback only on the specific
-signed-capability-unavailable error before the signed contract is locked. Use
-`--config-contract signed` to require signatures on that compatibility path.
-Use HTTPS: the generic account client still accepts HTTP URLs; strict invite
-validation permits HTTP only for explicit localhost development.
-
-Linux credentials are permission-protected plaintext files, not a hardware
-keystore or encrypted vault. Treat the entire state directory and its backups
-as secrets. Important files include `protected/device-credential.json`,
-`state.json` (including the local WireGuard private key), signing/contract state,
-and temporary enrollment/operation records. Runtime artifacts are stored under
-`runtime/revisions/<revision-hash>-<random>/xray.json` and `<interface>.conf`.
-Files use mode 0600 and runtime directories 0700. Active and last-known-good
-manifests retain process identity and configuration hashes for rollback and
-owned-resource cleanup. Never edit generated files while the runtime is active.
-
-## Actual limitations
-
-- **Local readiness is not connectivity.** `status`, `diagnose` and ACK success
-  establish process/socket/interface readiness, not a WireGuard handshake,
-  reachable peer, working DNS, correct remote policy, or internet access.
-  Verify the configured interface with `wg show <interface> latest-handshakes`
-  and test an authorized private service from the client. A fresh handshake
-  alone still does not establish application reachability.
-- The signed compiler supports exactly one address and one gateway peer. It
-  sends WG UDP to local Xray, then VLESS/TLS to the remote gateway. For signed
-  config the remote relay target is fixed at **127.0.0.1:51820 on the gateway**;
-  Xray and WireGuard must be co-hosted in the appropriate network namespace.
-  Arbitrary mesh discovery, gateway deployment and multi-peer compilation are
-  not implemented.
-- Only controller-supplied `AllowedIPs` are routed by `wg-quick`. There is no
-  universal full-tunnel or DNS-leak guarantee, automatic endpoint route
-  exemption, or kill switch. The signed compiler currently supplies no DNS
-  settings. Private-network reachability requires gateway forwarding and
-  return routing to be configured outside this CLI.
-- V2 validates the signed policy reference, artifact digest, expiry and replay
-  floor and records accepted policy metadata. It does **not** install a local
-  firewall or verify gateway ACL enforcement. Gateway enforcement remains an
-  external requirement; a policy-bound ACK is not proof that ACLs are active.
-- Signature expiry is checked when fetching. Offline cached `up` without control-plane
-  verification is disabled; `up` and `sync` always fetch and verify configuration from the
-  control plane. The Linux systemd watcher and the
-  macOS LaunchDaemon periodically sync, retry transient failures, and rebuild
-  an unhealthy owned runtime. Linux `one join` enables the watcher when its
-  systemd unit is installed; macOS uses `scripts/setup-xconnect-one-macos.sh`.
-  Revocation still requires a successful control-plane sync.
-- Runtime apply rollback covers local activation failures. A later ACK or
-  state-persistence failure can leave a newly active runtime with older saved
-  state; do not interpret every failed sync as a stopped tunnel. Inspect status
-  and retry after resolving the error. V1 advances its signed floor before
-  apply; v2 advances after runtime readback and ACK, preserving upstream behavior.
-- Startup refuses any existing interface with the requested name. A failed
-  `wg-quick up` never triggers a blind `wg-quick down`. Cleanup checks trusted
-  files and the recorded Linux interface index, and runs even after Xray dies
-  or loses its listener. Replaced interfaces, stale PID identities and old
-  manifests lacking interface identity fail closed and require operator review.
-  External network managers must not concurrently modify these interfaces:
-  inspection plus external `wg-quick` execution is not an atomic kernel lease.
-  Failed or interrupted startup can leave an unowned partial interface requiring
-  manual inspection; automatic deletion is deliberately refused. `wg-quick`
-  itself may perform its own failure cleanup.
-- macOS is a supported external-runtime controlled-client CLI. It requires a
-  root-launched Xray binary plus compatible `wg`, `wg-quick`, and WireGuard
-  userspace/kernel support (for example the supported Homebrew toolchain). It
-  does not use XConnect APP state. The APP may optionally host the same CLI as
-  a plugin, but that plugin mode does not change the standalone CLI contract.
-- Windows is a supported native `amd64` external-runtime controlled-client.
-  It manages only its named WireGuard tunnel service and protected state; see
-  [docs/windows-runtime.md](docs/windows-runtime.md). Mobile tunnel hosts are
-  not shipped.
-- Real Linux Xray/WireGuard execution and end-to-end networking were not tested
-  during extraction on the macOS development host. Passing tests and Linux
-  cross-builds are not live-network certification. Runtime subprocess output
-  is discarded to avoid exposing secrets, limiting failure diagnostics.
-
-See [PROVENANCE.md](PROVENANCE.md) for the exact source and extraction changes.
-Distributed under [Apache-2.0](LICENSE); external runtimes have their own licenses.
+Licensed under the [Apache License 2.0](LICENSE).
