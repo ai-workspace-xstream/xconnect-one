@@ -189,6 +189,7 @@ func TestProductionJoinFailsClosedWithoutPlatformRuntimeAndDoesNotAck(t *testing
 
 	err := run(t.Context(), []string{
 		"join",
+		"--runtime=external",
 		server.URL,
 		"--state-dir", stateDirectory,
 		"--device-id", "dev_cli",
@@ -772,4 +773,36 @@ func newCLIInviteServer(t *testing.T) (*httptest.Server, string, string, *atomic
 	}))
 	t.Cleanup(server.Close)
 	return server, joinToken, enrollmentToken, &exchangeCalls, &ackCalls
+}
+
+func TestExtractRuntimeModeAndPlatformSelection(t *testing.T) {
+	t.Setenv("XCONNECT_ONE_RUNTIME", "")
+
+	mode, remaining, err := extractRuntimeMode([]string{"up", "--state-dir", "/tmp/x"}, "")
+	if err != nil || mode != "embedded" || len(remaining) != 3 {
+		t.Fatalf("default extractRuntimeMode failed: mode=%q rem=%v err=%v", mode, remaining, err)
+	}
+
+	mode, remaining, err = extractRuntimeMode([]string{"--runtime=external", "status", "--state-dir", "/tmp/x"}, "")
+	if err != nil || mode != "external" || len(remaining) != 3 || remaining[0] != "status" {
+		t.Fatalf("flag=external extractRuntimeMode failed: mode=%q rem=%v err=%v", mode, remaining, err)
+	}
+
+	mode, remaining, err = extractRuntimeMode([]string{"up", "--runtime", "embedded", "--foreground"}, "external")
+	if err != nil || mode != "embedded" || len(remaining) != 2 || remaining[0] != "up" || remaining[1] != "--foreground" {
+		t.Fatalf("override env extractRuntimeMode failed: mode=%q rem=%v err=%v", mode, remaining, err)
+	}
+
+	if _, _, err := extractRuntimeMode([]string{"up", "--runtime", "unknown"}, ""); fault.Code(err) != fault.CodeInvalidInput {
+		t.Fatalf("expected invalid input error for bad --runtime, got err=%v", err)
+	}
+
+	rtEmbedded := platformRuntimeWithMode("darwin", t.TempDir(), "embedded")
+	if status, err := rtEmbedded.Status(t.Context()); err != nil || status.RuntimeVersion != "embedded" {
+		t.Fatalf("expected embedded runtime on darwin, status=%+v err=%v", status, err)
+	}
+	rtExternal := platformRuntimeWithMode("darwin", t.TempDir(), "external")
+	if _, ok := rtExternal.(*overlayruntime.Desktop); !ok {
+		t.Fatalf("expected *overlayruntime.Desktop for external mode, got %T", rtExternal)
+	}
 }

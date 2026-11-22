@@ -25,6 +25,7 @@ import (
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/credential"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	overlayruntime "github.com/ai-workspace-xstream/XConnect-One/overlay/runtime"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/runtime/embedded"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/signedconfig"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/state"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/usecase"
@@ -55,7 +56,11 @@ func execSudoSelf(ctx context.Context, subcommand, stateDir string, origArgs []s
 	if err != nil || strings.TrimSpace(exePath) == "" {
 		exePath = os.Args[0]
 	}
-	sudoArgs := []string{exePath, subcommand, "--state-dir", stateDir}
+	sudoArgs := []string{exePath}
+	if mode := strings.ToLower(strings.TrimSpace(os.Getenv("XCONNECT_ONE_RUNTIME"))); mode == "embedded" || mode == "external" {
+		sudoArgs = append(sudoArgs, "--runtime", mode)
+	}
+	sudoArgs = append(sudoArgs, subcommand, "--state-dir", stateDir)
 	sudoArgs = append(sudoArgs, stripStateDirFlag(origArgs)...)
 	return execSudoCommand(ctx, sudoArgs)
 }
@@ -960,6 +965,12 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	}
 	stStore := state.NewStore(*stateDirectory)
 	runtimeInstance := newRuntime(*stateDirectory)
+	if _, isEmbedded := runtimeInstance.(*embedded.Runtime); isEmbedded && !*watch {
+		// Embedded runtime hosts wireguard-go and xray-core inside this process,
+		// so 'up' stays supervised in foreground mode unless run externally.
+		*watch = true
+		*foreground = true
+	}
 	manager := usecase.NewDeviceSessionManager(client, stStore, credentials, runtimeInstance).WithSignedConfigV2()
 	if *watch {
 		if firstResult, err := manager.Sync(ctx); err != nil {

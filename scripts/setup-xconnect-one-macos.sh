@@ -53,7 +53,9 @@ restore_service() {
 }
 trap restore_service EXIT
 SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" XCONNECT_CREDENTIAL_BACKEND=file \
-  "$source_binary" down --state-dir "$state_dir" >/dev/null 2>&1 || true
+  "$source_binary" --runtime external down --state-dir "$state_dir" >/dev/null 2>&1 || true
+SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" XCONNECT_CREDENTIAL_BACKEND=file \
+  "$source_binary" --runtime embedded down --state-dir "$state_dir" >/dev/null 2>&1 || true
 
 install -d -m 0755 /usr/local/libexec
 if [[ $source_binary != "$service_binary" ]]; then
@@ -84,6 +86,8 @@ cat > "$backup/daemon.plist.new" <<EOF
 	<key>ProgramArguments</key>
 	<array>
 		<string>$service_binary</string>
+		<string>--runtime</string>
+		<string>embedded</string>
 		<string>up</string>
 		<string>--foreground</string>
 		<string>--no-sudo</string>

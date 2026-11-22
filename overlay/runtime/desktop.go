@@ -1063,6 +1063,12 @@ func renderWireGuardConfig(config model.Config, privateKey string) string {
 	return builder.String()
 }
 
+// RenderXrayConfig builds the local Xray JSON configuration for the signed
+// client transport profile (dokodemo-door UDP inbound -> VLESS/XHTTP/TLS outbound).
+func RenderXrayConfig(config model.Config) ([]byte, error) {
+	return renderXrayConfig(config)
+}
+
 func renderXrayConfig(config model.Config) ([]byte, error) {
 	user := map[string]any{
 		"id":             config.Transport.VLESSAuthID(),

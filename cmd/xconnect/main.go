@@ -21,6 +21,7 @@ import (
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/invite"
 	overlayruntime "github.com/ai-workspace-xstream/XConnect-One/overlay/runtime"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/runtime/embedded"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/state"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/usecase"
 )
@@ -31,8 +32,8 @@ const (
 	// defaultConsoleBindingURL is where a logged-in user binds/authorizes a
 	// gateway network (e.g. net-ph-xconnect) to their account.
 	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
-	defaultVersion        = "v0.1.20"
-	defaultBuildNumber    = "26"
+	defaultVersion           = "v0.1.21"
+	defaultBuildNumber       = "27"
 )
 
 type exitStatusError int
@@ -90,12 +91,58 @@ func formatFaultError(err error) string {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client) error {
-	return runWithFactories(ctx, args, stdout, stderr, httpClient, func(stateDirectory string) overlayruntime.Interface {
-		return platformRuntime(runtime.GOOS, stateDirectory)
+	runtimeMode, remaining, err := extractRuntimeMode(args, os.Getenv("XCONNECT_ONE_RUNTIME"))
+	if err != nil {
+		return err
+	}
+	return runWithFactories(ctx, remaining, stdout, stderr, httpClient, func(stateDirectory string) overlayruntime.Interface {
+		return platformRuntimeWithMode(runtime.GOOS, stateDirectory, runtimeMode)
 	}, credential.NewPlatformStore)
 }
 
+func extractRuntimeMode(args []string, envDefault string) (string, []string, error) {
+	mode := strings.ToLower(strings.TrimSpace(envDefault))
+	remaining := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--runtime" || arg == "-runtime":
+			if i+1 >= len(args) {
+				return "", nil, fault.New(fault.CodeInvalidInput, "parse --runtime flag: missing value", nil)
+			}
+			mode = strings.ToLower(strings.TrimSpace(args[i+1]))
+			i++
+		case strings.HasPrefix(arg, "--runtime="):
+			mode = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(arg, "--runtime=")))
+		case strings.HasPrefix(arg, "-runtime="):
+			mode = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(arg, "-runtime=")))
+		default:
+			remaining = append(remaining, arg)
+		}
+	}
+	if mode == "" {
+		mode = "embedded"
+	}
+	switch mode {
+	case "embedded", "external":
+		_ = os.Setenv("XCONNECT_ONE_RUNTIME", mode)
+		return mode, remaining, nil
+	default:
+		return "", nil, fault.New(fault.CodeInvalidInput, fmt.Sprintf("invalid --runtime %q (expected embedded or external)", mode), nil)
+	}
+}
+
 func platformRuntime(goos, stateDirectory string) overlayruntime.Interface {
+	return platformRuntimeWithMode(goos, stateDirectory, "external")
+}
+
+func platformRuntimeWithMode(goos, stateDirectory, runtimeMode string) overlayruntime.Interface {
+	if strings.EqualFold(strings.TrimSpace(runtimeMode), "embedded") {
+		switch goos {
+		case "linux", "darwin", "windows":
+			return embedded.New(stateDirectory)
+		}
+	}
 	if goos == "linux" {
 		return overlayruntime.NewLinuxDesktop(stateDirectory)
 	}
