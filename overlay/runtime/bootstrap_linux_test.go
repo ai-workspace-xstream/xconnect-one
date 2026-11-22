@@ -109,3 +109,29 @@ func TestBootstrapLinuxRejectsArchiveChecksumMismatch(t *testing.T) {
 		t.Fatalf("error=%v code=%q", err, fault.Code(err))
 	}
 }
+
+func TestBootstrapLinuxNonSystemdDoesNotRequireSystemctl(t *testing.T) {
+	archive := testXrayArchive(t, []byte("managed-xray"))
+	digest := sha256.Sum256(archive)
+	server := httptest.NewTLSServer(httpHandler(func([]byte) []byte { return archive }))
+	defer server.Close()
+
+	dependencies := bootstrapLinuxDependencies{
+		architecture: goruntime.GOARCH,
+		effectiveUID: func() int { return 0 },
+		hasSystemd:   func() bool { return false },
+		lookPath: func(name string) (string, error) {
+			if name == "wg" || name == "wg-quick" {
+				return filepath.Join("/usr/bin", name), nil
+			}
+			return "", errors.New("missing " + name)
+		},
+		run:      func(context.Context, string, ...string) error { return errors.New("must not run apt") },
+		client:   server.Client(),
+		now:      func() time.Time { return time.Now().UTC() },
+		artifact: managedRuntimeArtifact{Version: "vtest", Name: "Xray-linux-test.zip", ArchiveSHA256: hex.EncodeToString(digest[:])},
+	}
+	if _, err := bootstrapLinux(t.Context(), BootstrapOptions{StateDirectory: filepath.Join(t.TempDir(), "state"), ReleaseBaseURL: server.URL}, dependencies); err != nil {
+		t.Fatalf("expected non-systemd bootstrap to succeed without systemctl/systemd-run, got %v", err)
+	}
+}

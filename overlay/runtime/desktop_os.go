@@ -55,6 +55,9 @@ func (b *osDesktopBackend) Run(ctx context.Context, name string, args ...string)
 }
 
 func (b *osDesktopBackend) Start(executable string, args []string, revision, configDigest string) (processIdentity, error) {
+	if !shouldUseSystemd(os.Getenv("XCONNECT_LINUX_PROCESS_MODE"), os.Stat, exec.LookPath) {
+		return startDirectLinuxProcess(executable, args, revision, configDigest)
+	}
 	unit := fmt.Sprintf("xconnect-one-xray-%d-%d", os.Getpid(), time.Now().UnixNano())
 	command := exec.Command("systemd-run", systemdRunArguments(unit, executable, args)...)
 	command.Stdin = nil
@@ -81,6 +84,64 @@ func (b *osDesktopBackend) Start(executable string, args []string, revision, con
 		return processIdentity{}, err
 	}
 	identity.StartToken = startToken
+	return identity, nil
+}
+
+func shouldUseSystemd(mode string, stat func(string) (os.FileInfo, error), lookPath func(string) (string, error)) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "systemd":
+		return true
+	case "direct":
+		return false
+	default:
+		if stat == nil || lookPath == nil {
+			return false
+		}
+		info, err := stat("/run/systemd/system")
+		if err != nil || !info.IsDir() {
+			return false
+		}
+		if _, err := lookPath("systemd-run"); err != nil {
+			return false
+		}
+		if _, err := lookPath("systemctl"); err != nil {
+			return false
+		}
+		return true
+	}
+}
+
+func startDirectLinuxProcess(executable string, args []string, revision, configDigest string) (processIdentity, error) {
+	command := exec.Command(executable, args...)
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := command.Start(); err != nil {
+		return processIdentity{}, err
+	}
+	pid := command.Process.Pid
+	identity := processIdentity{
+		PID:          pid,
+		Executable:   canonicalPath(executable),
+		ConfigPath:   configArgument(args),
+		ConfigSHA256: configDigest,
+		Revision:     revision,
+	}
+	state, startToken, err := linuxProcessStat(pid)
+	if err != nil || state == 'Z' || state == 'X' {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		if err == nil {
+			err = errors.New("direct child exited immediately")
+		}
+		return processIdentity{}, err
+	}
+	identity.StartToken = startToken
+	// Reap child in background so long-lived container supervisors never accumulate zombies.
+	go func() {
+		_ = command.Wait()
+	}()
 	return identity, nil
 }
 
@@ -119,6 +180,16 @@ func (b *osDesktopBackend) ProcessAlive(identity processIdentity) (bool, error) 
 		return false, errors.New("incomplete process identity")
 	}
 	procDirectory := filepath.Join("/proc", strconv.Itoa(identity.PID))
+	state, startToken, err := linuxProcessStat(identity.PID)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && (state == 'Z' || state == 'X')) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if startToken != identity.StartToken {
+		return false, errors.New("process start identity mismatch")
+	}
 	executable, err := os.Readlink(filepath.Join(procDirectory, "exe"))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -128,13 +199,6 @@ func (b *osDesktopBackend) ProcessAlive(identity processIdentity) (bool, error) 
 	}
 	if canonicalPath(executable) != canonicalPath(identity.Executable) {
 		return false, errors.New("executable identity mismatch")
-	}
-	startToken, err := linuxProcessStartToken(identity.PID)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil || startToken != identity.StartToken {
-		return false, errors.New("process start identity mismatch")
 	}
 	cmdline, err := os.ReadFile(filepath.Join(procDirectory, "cmdline"))
 	if err != nil {
@@ -252,19 +316,102 @@ func processSocketInodes(pid int) (map[string]struct{}, error) {
 }
 
 func linuxProcessStartToken(pid int) (string, error) {
+	_, startToken, err := linuxProcessStat(pid)
+	return startToken, err
+}
+
+func linuxProcessStat(pid int) (byte, string, error) {
 	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	closingParenthesis := strings.LastIndexByte(string(raw), ')')
 	if closingParenthesis < 0 || closingParenthesis+2 >= len(raw) {
-		return "", errors.New("invalid process stat")
+		return 0, "", errors.New("invalid process stat")
 	}
 	fields := strings.Fields(string(raw[closingParenthesis+2:]))
-	if len(fields) <= 19 {
-		return "", errors.New("incomplete process stat")
+	if len(fields) <= 19 || len(fields[0]) == 0 {
+		return 0, "", errors.New("incomplete process stat")
 	}
-	return fields[19], nil
+	return fields[0][0], fields[19], nil
+}
+
+func (b *osDesktopBackend) WireGuardPublicKey(ctx context.Context, wgPath, logicalName string) (string, error) {
+	if !isSafeLinuxInterfaceName(logicalName) {
+		return "", errors.New("invalid WireGuard interface name")
+	}
+	command := exec.CommandContext(ctx, wgPath, "show", logicalName, "public-key")
+	command.Stdin = nil
+	raw, err := command.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (b *osDesktopBackend) ReclaimWireGuardInterface(ctx context.Context, logicalName string) error {
+	if !isSafeLinuxInterfaceName(logicalName) {
+		return errors.New("invalid WireGuard interface name")
+	}
+	ipBin, err := lookPathLinuxIP()
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, ipBin, "link", "delete", "dev", logicalName)
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	return command.Run()
+}
+
+func (b *osDesktopBackend) WireGuardPeerStats(ctx context.Context, wgPath, logicalName string) (WireGuardStats, error) {
+	if !isSafeLinuxInterfaceName(logicalName) {
+		return WireGuardStats{}, errors.New("invalid WireGuard interface name")
+	}
+	hsOut, err := exec.CommandContext(ctx, wgPath, "show", logicalName, "latest-handshakes").Output()
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	txOut, err := exec.CommandContext(ctx, wgPath, "show", logicalName, "transfer").Output()
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	rx, tx := parseWireGuardTransfer(string(txOut))
+	return WireGuardStats{
+		LatestHandshake: parseWireGuardHandshakes(string(hsOut)),
+		RxBytes:         rx,
+		TxBytes:         tx,
+	}, nil
+}
+
+func (b *osDesktopBackend) NudgeWireGuardPeer(ctx context.Context, wgPath, logicalName, peerPublicKey, endpoint string) error {
+	if !isSafeLinuxInterfaceName(logicalName) || strings.TrimSpace(peerPublicKey) == "" || strings.TrimSpace(endpoint) == "" {
+		return errors.New("invalid WireGuard peer nudge parameters")
+	}
+	command := exec.CommandContext(ctx, wgPath, "set", logicalName, "peer", peerPublicKey, "endpoint", endpoint)
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	return command.Run()
+}
+
+func isSafeLinuxInterfaceName(name string) bool {
+	if len(name) == 0 || len(name) > 15 || strings.ContainsAny(name, "/\\ \t\n\r") {
+		return false
+	}
+	return name != "." && name != ".."
+}
+
+func lookPathLinuxIP() (string, error) {
+	if p, err := exec.LookPath("ip"); err == nil {
+		return canonicalPath(p), nil
+	}
+	for _, candidate := range []string{"/usr/sbin/ip", "/sbin/ip"} {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return canonicalPath(candidate), nil
+		}
+	}
+	return "", os.ErrNotExist
 }
 
 func containsConfigArgument(args []string, expected string) bool {

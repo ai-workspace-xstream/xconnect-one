@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -33,7 +32,7 @@ const (
 	// gateway network (e.g. net-ph-xconnect) to their account.
 	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
 	defaultVersion        = "v0.1.20"
-	defaultBuildNumber    = "24"
+	defaultBuildNumber    = "26"
 )
 
 type exitStatusError int
@@ -53,9 +52,9 @@ type runtimeFactory func(stateDirectory string) overlayruntime.Interface
 type credentialFactory func(stateDirectory string) credential.Store
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := notifyShutdownContext(context.Background())
 	defer stop()
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, http.DefaultClient); err != nil {
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, controlplane.NewDefaultHTTPClient()); err != nil {
 		var exitErr exitStatusError
 		if errors.As(err, &exitErr) {
 			os.Exit(int(exitErr))
@@ -365,9 +364,23 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	bootstrapRuntime := flags.Bool("bootstrap", false, "install or repair the approved managed runtime before synchronizing")
 	runtimeReleaseBaseURL := flags.String("runtime-release-base-url", os.Getenv("XCONNECT_RUNTIME_RELEASE_BASE_URL"), "approved Xray release mirror base URL")
 	watch := flags.Bool("watch", false, "run sync periodically in a watch loop")
+	foreground := flags.Bool("foreground", false, "run in foreground daemon mode with auto-recovery and graceful cleanup on SIGINT/SIGTERM (implies --watch)")
+	processMode := flags.String("process-mode", os.Getenv("XCONNECT_LINUX_PROCESS_MODE"), "Linux process supervision mode: auto, systemd, or direct")
 	interval := flags.Duration("interval", usecase.DefaultSyncInterval, "sync interval for watch loop (15s to 100s)")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return fault.New(fault.CodeInvalidInput, "parse sync arguments", err)
+	}
+	if flags.NArg() != 0 {
+		return fault.New(fault.CodeInvalidInput, "parse sync arguments", nil)
+	}
+	if _, err := normalizeProcessMode(*processMode); err != nil {
+		return err
+	}
+	if *foreground {
+		*watch = true
 	}
 	if *watch {
 		if err := usecase.ValidateSyncInterval(*interval); err != nil {
@@ -396,8 +409,9 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	if err != nil {
 		return err
 	}
+	stStore := state.NewStore(*stateDirectory)
 	runtimeInstance := newRuntime(*stateDirectory)
-	manager := usecase.NewDeviceSessionManager(client, state.NewStore(*stateDirectory), credentials, runtimeInstance)
+	manager := usecase.NewDeviceSessionManager(client, stStore, credentials, runtimeInstance)
 	if *signedConfigV2 {
 		manager.WithSignedConfigV2()
 	}
@@ -410,25 +424,87 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 		} else {
 			_ = writeJSON(stdout, firstResult)
 		}
-
-		loop := &usecase.SyncLoop{
-			Interval: *interval,
-			Runtime:  runtimeInstance,
-			Sync:     manager.Sync,
-			OnResult: func(res usecase.SyncResult) {
-				_ = writeJSON(stdout, res)
-			},
-			OnError: func(err error) {
-				_, _ = fmt.Fprintf(stderr, "xconnect: sync warning: %v\n", err)
-			},
-		}
-		return loop.Run(ctx)
+		return runSupervisedSyncLoop(ctx, client, stStore, runtimeInstance, manager.Sync, *interval, *foreground, stdout, stderr)
 	}
 	result, err := manager.Sync(ctx)
 	if err != nil {
 		return err
 	}
 	return writeJSON(stdout, result)
+}
+
+func normalizeProcessMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	switch mode {
+	case "", "auto", "systemd", "direct":
+		if mode != "" {
+			_ = os.Setenv("XCONNECT_LINUX_PROCESS_MODE", mode)
+		}
+		return mode, nil
+	default:
+		return "", fault.New(fault.CodeInvalidInput, fmt.Sprintf("invalid --process-mode %q (expected auto, systemd, or direct)", raw), nil)
+	}
+}
+
+func resolveManagedInterfaceName(store *state.Store) string {
+	if store == nil {
+		return ""
+	}
+	lk, err := store.LoadLastKnown()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(lk.Config.WireGuard.Interface)
+}
+
+func policyExpiryFunc(store *state.Store) func() (time.Time, bool) {
+	return func() (time.Time, bool) {
+		if store == nil {
+			return time.Time{}, false
+		}
+		ps, err := store.LoadPolicyState()
+		if err != nil || ps.ExpiresAt.IsZero() {
+			return time.Time{}, false
+		}
+		return ps.ExpiresAt, true
+	}
+}
+
+func runSupervisedSyncLoop(
+	ctx context.Context,
+	client *controlplane.Client,
+	store *state.Store,
+	runtimeInstance overlayruntime.Interface,
+	syncFn func(context.Context) (usecase.SyncResult, error),
+	interval time.Duration,
+	foreground bool,
+	stdout, stderr io.Writer,
+) error {
+	netMon := overlayruntime.NewNetworkMonitor(resolveManagedInterfaceName(store))
+	events := netMon.Start(ctx)
+	loop := &usecase.SyncLoop{
+		Interval:            interval,
+		Runtime:             runtimeInstance,
+		Sync:                syncFn,
+		Events:              events,
+		HealthCheckInterval: 5 * time.Second,
+		PolicyExpiry:        policyExpiryFunc(store),
+		ShutdownOnCancel:    foreground,
+		OnNetworkEvent: func(ev overlayruntime.NetworkEvent) {
+			client.CloseIdleConnections()
+			_, _ = fmt.Fprintf(stderr, "xconnect: host event (%s); refreshing transport and control plane\n", ev.Kind)
+		},
+		OnRecovery: func(level, reason string) {
+			_, _ = fmt.Fprintf(stderr, "xconnect: recovery (%s): %s\n", level, reason)
+		},
+		OnResult: func(res usecase.SyncResult) {
+			_ = writeJSON(stdout, res)
+		},
+		OnError: func(err error) {
+			_, _ = fmt.Fprintf(stderr, "xconnect: sync warning: %v\n", err)
+		},
+	}
+	return loop.Run(ctx)
 }
 
 func runUp(ctx context.Context, args []string, stdout, stderr io.Writer, newRuntime runtimeFactory) error {

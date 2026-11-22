@@ -261,6 +261,77 @@ func runWindowsCommand(ctx context.Context, name string, args ...string) error {
 	return command.Run()
 }
 
+func runWindowsOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	command.Stdin = nil
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return command.Output()
+}
+
+func (b *windowsDesktopBackend) WireGuardPublicKey(ctx context.Context, wgPath, logicalName string) (string, error) {
+	tunnelName, err := validateWindowsTunnelName(logicalName)
+	if err != nil {
+		return "", err
+	}
+	raw, err := runWindowsOutput(ctx, wgPath, "show", tunnelName, "public-key")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (b *windowsDesktopBackend) ReclaimWireGuardInterface(ctx context.Context, logicalName string) error {
+	tunnelName, err := validateWindowsTunnelName(logicalName)
+	if err != nil {
+		return err
+	}
+	wireguardExe, err := b.LookPath("wg-quick")
+	if err != nil {
+		return err
+	}
+	if err := runWindowsCommand(ctx, wireguardExe, "/uninstalltunnelservice", tunnelName); err != nil {
+		index, indexErr := b.InterfaceIndex(tunnelName)
+		serviceExists, serviceErr := b.tunnelServiceExists(tunnelName)
+		if indexErr == nil && serviceErr == nil && index == 0 && !serviceExists {
+			return nil
+		}
+		return err
+	}
+	return b.waitForInterfaceAndServiceGone(ctx, tunnelName)
+}
+
+func (b *windowsDesktopBackend) WireGuardPeerStats(ctx context.Context, wgPath, logicalName string) (WireGuardStats, error) {
+	tunnelName, err := validateWindowsTunnelName(logicalName)
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	hsOut, err := runWindowsOutput(ctx, wgPath, "show", tunnelName, "latest-handshakes")
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	txOut, err := runWindowsOutput(ctx, wgPath, "show", tunnelName, "transfer")
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	rx, tx := parseWireGuardTransfer(string(txOut))
+	return WireGuardStats{
+		LatestHandshake: parseWireGuardHandshakes(string(hsOut)),
+		RxBytes:         rx,
+		TxBytes:         tx,
+	}, nil
+}
+
+func (b *windowsDesktopBackend) NudgeWireGuardPeer(ctx context.Context, wgPath, logicalName, peerPublicKey, endpoint string) error {
+	tunnelName, err := validateWindowsTunnelName(logicalName)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(peerPublicKey) == "" || strings.TrimSpace(endpoint) == "" {
+		return errors.New("invalid WireGuard peer nudge parameters")
+	}
+	return runWindowsCommand(ctx, wgPath, "set", tunnelName, "peer", peerPublicKey, "endpoint", endpoint)
+}
+
 func (b *windowsDesktopBackend) waitForInterface(ctx context.Context, name string, wantUp bool) error {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()

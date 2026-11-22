@@ -264,3 +264,111 @@ func TestValidateSyncInterval(t *testing.T) {
 		})
 	}
 }
+
+type fakeSupervisableRuntime struct {
+	*overlayruntime.Fake
+	health         overlayruntime.DataPlaneStatus
+	restartErr     error
+	restartCalls   atomic.Int32
+	onRestart      func()
+	onDown         func()
+}
+
+func (f *fakeSupervisableRuntime) DataPlaneHealth(context.Context) (overlayruntime.DataPlaneStatus, error) {
+	return f.health, nil
+}
+
+func (f *fakeSupervisableRuntime) RestartTransport(context.Context) error {
+	f.restartCalls.Add(1)
+	if f.onRestart != nil {
+		f.onRestart()
+	}
+	return f.restartErr
+}
+
+func (f *fakeSupervisableRuntime) Down(ctx context.Context) error {
+	if f.onDown != nil {
+		f.onDown()
+	}
+	return f.Fake.Down(ctx)
+}
+
+func TestSyncLoopRecoversImmediatelyOnNetworkEventAndShutsDownGracefully(t *testing.T) {
+	clock := newFakeLoopClock(time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC))
+	rt := &fakeSupervisableRuntime{
+		Fake: &overlayruntime.Fake{StatusResult: overlayruntime.Status{Applied: true, Interface: "xconone0"}},
+		health: overlayruntime.DataPlaneStatus{
+			Applied:       true,
+			Interface:     "xconone0",
+			XrayAlive:     true,
+			LoopbackOwned: true,
+		},
+	}
+	events := make(chan overlayruntime.NetworkEvent, 2)
+	var netEventsSeen atomic.Int32
+	var syncCalls atomic.Int32
+
+	ctx, cancel := context.WithCancel(t.Context())
+	loop := &usecase.SyncLoop{
+		Interval: 60 * time.Second,
+		Clock:    clock,
+		Runtime:  rt,
+		Events:   events,
+		OnNetworkEvent: func(overlayruntime.NetworkEvent) {
+			netEventsSeen.Add(1)
+		},
+		ShutdownOnCancel: true,
+		Sync: func(context.Context) (usecase.SyncResult, error) {
+			syncCalls.Add(1)
+			cancel()
+			return usecase.SyncResult{DeviceID: "dev", NetworkID: "net", Generation: 2}, nil
+		},
+	}
+
+	events <- overlayruntime.NetworkEvent{Kind: overlayruntime.NetworkEventWake, At: clock.now}
+	if err := loop.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if netEventsSeen.Load() != 1 || rt.restartCalls.Load() != 1 || syncCalls.Load() != 1 {
+		t.Fatalf("netEvents=%d restarts=%d syncs=%d", netEventsSeen.Load(), rt.restartCalls.Load(), syncCalls.Load())
+	}
+	if rt.DownCalls != 1 {
+		t.Fatalf("expected ShutdownOnCancel=true to call Runtime.Down once, got %d", rt.DownCalls)
+	}
+}
+
+func TestSyncLoopHealthTickDetectsDeadXrayAndEscalatesFromLevel1ToLevel2(t *testing.T) {
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	clock := newFakeLoopClock(now)
+	rt := &fakeSupervisableRuntime{
+		Fake: &overlayruntime.Fake{StatusResult: overlayruntime.Status{Applied: true, Interface: "xconone0"}},
+		health: overlayruntime.DataPlaneStatus{
+			Applied:       false,
+			Interface:     "xconone0",
+			XrayAlive:     false,
+			LoopbackOwned: false,
+		},
+		restartErr: errors.New("xray loopback failed"),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var syncCalls atomic.Int32
+	loop := &usecase.SyncLoop{
+		Interval:            60 * time.Second,
+		HealthCheckInterval: 15 * time.Millisecond,
+		Clock:               clock,
+		Runtime:             rt,
+		Sync: func(context.Context) (usecase.SyncResult, error) {
+			syncCalls.Add(1)
+			cancel()
+			return usecase.SyncResult{DeviceID: "dev", NetworkID: "net", Generation: 3}, nil
+		},
+	}
+	if err := loop.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rt.restartCalls.Load() != 1 || syncCalls.Load() != 1 {
+		t.Fatalf("expected level1 attempt then level2 sync: restarts=%d syncs=%d", rt.restartCalls.Load(), syncCalls.Load())
+	}
+}

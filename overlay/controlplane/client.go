@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -52,13 +53,45 @@ func New(baseURL, token string, httpClient *http.Client) (*Client, error) {
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 20 * time.Second}
+		httpClient = NewDefaultHTTPClient()
 	}
 	return &Client{
 		baseURL:    parsed,
 		token:      strings.TrimSpace(token),
 		httpClient: httpClient,
 	}, nil
+}
+
+// NewDefaultHTTPClient constructs an HTTP client hardened for mobile/weak
+// networks, IPv4/IPv6 dual-stack fallback (Happy Eyeballs), and quick recovery
+// after interface changes.
+func NewDefaultHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:       8 * time.Second,
+			KeepAlive:     15 * time.Second,
+			FallbackDelay: 300 * time.Millisecond,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          16,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{
+		Timeout:   20 * time.Second,
+		Transport: transport,
+	}
+}
+
+// CloseIdleConnections drops pooled TCP/TLS connections so subsequent requests
+// dial over newly active host interfaces (for example after Wi-Fi switch or wake).
+func (c *Client) CloseIdleConnections() {
+	if c != nil && c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
+	}
 }
 
 func (c *Client) RegisterDevice(ctx context.Context, request RegisterDeviceRequest) (RegisterDeviceResponse, error) {

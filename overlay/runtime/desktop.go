@@ -90,6 +90,41 @@ func NewMacOSDesktop(stateDirectory string) *Desktop {
 	return newDesktop(stateDirectory, newOSDesktopBackend())
 }
 
+// wireGuardReclaimBackend is implemented by OS backends capable of proving
+// cryptographic ownership of an existing WireGuard interface via its public key
+// and reclaiming it cleanly when stale local state remains after a crash.
+type wireGuardReclaimBackend interface {
+	WireGuardPublicKey(ctx context.Context, wgPath, logicalName string) (string, error)
+	ReclaimWireGuardInterface(ctx context.Context, logicalName string) error
+}
+
+// WireGuardStats captures live WireGuard kernel/userspace peer telemetry.
+type WireGuardStats struct {
+	LatestHandshake time.Time
+	RxBytes         uint64
+	TxBytes         uint64
+}
+
+// wireGuardStatsBackend is implemented by OS backends capable of reading live
+// WireGuard handshake/transfer counters and nudging a peer after transport restart.
+type wireGuardStatsBackend interface {
+	WireGuardPeerStats(ctx context.Context, wgPath, logicalName string) (WireGuardStats, error)
+	NudgeWireGuardPeer(ctx context.Context, wgPath, logicalName, peerPublicKey, endpoint string) error
+}
+
+// DataPlaneStatus summarizes live Xray + WireGuard tunnel health for active
+// supervision without exposing secret material.
+type DataPlaneStatus struct {
+	Applied         bool
+	Interface       string
+	XrayAlive       bool
+	LoopbackOwned   bool
+	LatestHandshake time.Time
+	RxBytes         uint64
+	TxBytes         uint64
+	HasStats        bool
+}
+
 // wireGuardServiceBackend is implemented by platforms whose WireGuard
 // lifecycle is represented by an OS service rather than a process/interface
 // pair. The optional interface keeps the Linux backend and its contract
@@ -159,7 +194,7 @@ func (r *Desktop) Apply(ctx context.Context, request ApplyRequest) (ApplyResult,
 			if !r.manifestMetadataTrusted(active, dependencies) {
 				return ApplyResult{}, fault.New(fault.CodeRuntimeProcessStale, "verify stopped runtime metadata ownership", nil)
 			}
-			activated, startErr := r.startManifest(ctx, active, dependencies)
+			activated, startErr := r.startManifestWithPrivateKey(ctx, active, dependencies, request.WireGuardPrivateKey)
 			if startErr != nil {
 				return ApplyResult{}, startErr
 			}
@@ -171,9 +206,13 @@ func (r *Desktop) Apply(ctx context.Context, request ApplyRequest) (ApplyResult,
 		}
 		healthy, healthErr := r.manifestHealthy(ctx, active, dependencies)
 		if healthErr != nil && fault.Code(healthErr) == fault.CodeRuntimeProcessStale {
-			return ApplyResult{}, healthErr
-		}
-		if healthy && active.PathManager != nil && request.Config.Mesh != nil && !meshMatches(active, request.Config.Mesh) {
+			reclaimed, reclaimErr := r.reclaimStaleManifestIfOwned(ctx, &active, request, dependencies)
+			if reclaimErr != nil || !reclaimed {
+				return ApplyResult{}, healthErr
+			}
+			activeErr = errRuntimeArtifactNotFound
+		} else {
+			if healthy && active.PathManager != nil && request.Config.Mesh != nil && !meshMatches(active, request.Config.Mesh) {
 			handled, err := r.reconcileMesh(ctx, active, request, dependencies)
 			if err != nil {
 				return ApplyResult{}, fault.New(fault.CodeRuntimeApplyFailed, "reconcile mesh peers", err)
@@ -204,6 +243,7 @@ func (r *Desktop) Apply(ctx context.Context, request ApplyRequest) (ApplyResult,
 				return ApplyResult{}, err
 			}
 			return applyResult(request.Config), nil
+		}
 		}
 	}
 
@@ -237,7 +277,7 @@ func (r *Desktop) Apply(ctx context.Context, request ApplyRequest) (ApplyResult,
 		}
 	}
 
-	activated, err := r.startManifest(ctx, candidate, dependencies)
+	activated, err := r.startManifestWithPrivateKey(ctx, candidate, dependencies, request.WireGuardPrivateKey)
 	if err != nil {
 		return ApplyResult{}, r.rollback(ctx, candidate, previous, dependencies, err)
 	}
@@ -533,9 +573,21 @@ func (r *Desktop) prepare(request ApplyRequest, xrayPath string) (desktopManifes
 }
 
 func (r *Desktop) startManifest(ctx context.Context, manifest desktopManifest, dependencies desktopDependencies) (desktopManifest, error) {
+	return r.startManifestWithPrivateKey(ctx, manifest, dependencies, "")
+}
+
+func (r *Desktop) startManifestWithPrivateKey(ctx context.Context, manifest desktopManifest, dependencies desktopDependencies, wireGuardPrivateKey string) (desktopManifest, error) {
 	serviceExists, serviceOwned, serviceErr := r.wireGuardServiceState(manifest.Interface, dependencies.wgQuick, manifest.WGConfigPath)
 	if serviceErr != nil {
 		return desktopManifest{}, fault.New(fault.CodeRuntimeProcessStale, "inspect WireGuard tunnel service", nil)
+	}
+	if serviceExists && !serviceOwned && strings.TrimSpace(wireGuardPrivateKey) != "" {
+		if reclaimed, _ := r.reclaimStaleOwnedInterface(ctx, manifest.Interface, wireGuardPrivateKey, dependencies); reclaimed {
+			serviceExists, serviceOwned, serviceErr = r.wireGuardServiceState(manifest.Interface, dependencies.wgQuick, manifest.WGConfigPath)
+			if serviceErr != nil {
+				return desktopManifest{}, fault.New(fault.CodeRuntimeProcessStale, "inspect WireGuard tunnel service", nil)
+			}
+		}
 	}
 	if serviceExists {
 		if !serviceOwned {
@@ -544,6 +596,11 @@ func (r *Desktop) startManifest(ctx context.Context, manifest desktopManifest, d
 		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "WireGuard tunnel service already exists", nil)
 	}
 	index, err := r.backend.InterfaceIndex(manifest.Interface)
+	if err == nil && index != 0 && strings.TrimSpace(wireGuardPrivateKey) != "" {
+		if reclaimed, _ := r.reclaimStaleOwnedInterface(ctx, manifest.Interface, wireGuardPrivateKey, dependencies); reclaimed {
+			index, err = r.backend.InterfaceIndex(manifest.Interface)
+		}
+	}
 	if err != nil || index != 0 {
 		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "WireGuard interface already exists or cannot be inspected", nil)
 	}
@@ -1049,6 +1106,10 @@ func renderXrayConfig(config model.Config) ([]byte, error) {
 					"mode": config.Transport.XHTTPMode(),
 					"host": config.Transport.XHTTPHost(),
 				},
+				"sockopt": map[string]any{
+					"tcpKeepAliveIdle":     30,
+					"tcpKeepAliveInterval": 15,
+				},
 			},
 		}},
 	}
@@ -1058,6 +1119,206 @@ func renderXrayConfig(config model.Config) ([]byte, error) {
 		profile["inbounds"] = append(profile["inbounds"].([]any), map[string]any{"tag": "xconnect-peer-relay-in", "listen": host, "port": port, "protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1", "port": 51821, "network": "tcp"}})
 	}
 	return json.MarshalIndent(profile, "", "  ")
+}
+
+func (r *Desktop) reclaimStaleOwnedInterface(ctx context.Context, logicalName, privateKeyB64 string, dependencies desktopDependencies) (bool, error) {
+	reclaimer, ok := r.backend.(wireGuardReclaimBackend)
+	if !ok || strings.TrimSpace(privateKeyB64) == "" {
+		return false, nil
+	}
+	expectedPubKey, err := deriveWireGuardPublicKey(privateKeyB64)
+	if err != nil {
+		return false, err
+	}
+	livePubKey, err := reclaimer.WireGuardPublicKey(ctx, dependencies.wg, logicalName)
+	if err != nil || strings.TrimSpace(livePubKey) == "" || strings.TrimSpace(livePubKey) != expectedPubKey {
+		return false, nil
+	}
+	if err := reclaimer.ReclaimWireGuardInterface(ctx, logicalName); err != nil {
+		return false, err
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		index, indexErr := r.backend.InterfaceIndex(logicalName)
+		if indexErr == nil && index == 0 {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	index, indexErr := r.backend.InterfaceIndex(logicalName)
+	return indexErr == nil && index == 0, nil
+}
+
+func (r *Desktop) reclaimStaleManifestIfOwned(ctx context.Context, active *desktopManifest, request ApplyRequest, dependencies desktopDependencies) (bool, error) {
+	if active == nil || active.Stopped || active.Interface != request.Config.WireGuard.Interface {
+		return false, nil
+	}
+	if _, ok := r.backend.(wireGuardReclaimBackend); !ok {
+		return false, nil
+	}
+	if !r.manifestMetadataTrusted(*active, dependencies) {
+		return false, nil
+	}
+	// Never kill a foreign/unowned Xray process; only clean up our dead or still-owned Xray.
+	if active.Xray.PID > 0 {
+		alive, err := r.backend.ProcessAlive(active.Xray)
+		if err != nil {
+			return false, nil
+		}
+		if alive {
+			if err := r.backend.Stop(active.Xray); err != nil {
+				return false, nil
+			}
+		}
+	}
+	if active.PathManager != nil && active.PathManager.PID > 0 {
+		alive, err := r.backend.ProcessAlive(*active.PathManager)
+		if err == nil && alive {
+			_ = r.backend.Stop(*active.PathManager)
+		}
+	}
+	index, err := r.backend.InterfaceIndex(active.Interface)
+	if err == nil && index != 0 {
+		reclaimed, reclaimErr := r.reclaimStaleOwnedInterface(ctx, active.Interface, request.WireGuardPrivateKey, dependencies)
+		if reclaimErr != nil || !reclaimed {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// DataPlaneHealth inspects live process, loopback ownership, and WireGuard
+// handshake/transfer counters for active tunnel supervision.
+func (r *Desktop) DataPlaneHealth(ctx context.Context) (DataPlaneStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := DataPlaneStatus{}
+	dependencies, err := r.dependencies()
+	if err != nil || !r.backend.Privileged() {
+		return result, nil
+	}
+	manifest, err := r.loadManifest(r.activeManifestPath())
+	if errors.Is(err, errRuntimeArtifactNotFound) || err != nil || manifest.Stopped {
+		return result, err
+	}
+	if !r.manifestMetadataTrusted(manifest, dependencies) {
+		return result, fault.New(fault.CodeRuntimeProcessStale, "verify runtime metadata ownership", nil)
+	}
+	result.Interface = manifest.Interface
+	index, indexErr := r.backend.InterfaceIndex(manifest.Interface)
+	if indexErr != nil || index == 0 || (manifest.InterfaceIndex != 0 && index != manifest.InterfaceIndex) {
+		return result, nil
+	}
+	trusted, _ := r.processTrusted(manifest)
+	result.XrayAlive = trusted
+	if trusted {
+		owned, ownErr := r.backend.LoopbackOwned(manifest.Xray, manifest.LoopbackAddress)
+		result.LoopbackOwned = ownErr == nil && owned
+	}
+	result.Applied = result.XrayAlive && result.LoopbackOwned
+	if statsBackend, ok := r.backend.(wireGuardStatsBackend); ok {
+		if stats, statsErr := statsBackend.WireGuardPeerStats(ctx, dependencies.wg, manifest.Interface); statsErr == nil {
+			result.LatestHandshake = stats.LatestHandshake
+			result.RxBytes = stats.RxBytes
+			result.TxBytes = stats.TxBytes
+			result.HasStats = true
+		}
+	}
+	return result, nil
+}
+
+// RestartTransport performs a Level-1 hot restart of Xray while keeping the
+// existing WireGuard interface, dynamically assigned IP, and routes intact,
+// then nudges the WireGuard peer so handshake resumes over the fresh socket.
+func (r *Desktop) RestartTransport(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dependencies, err := r.dependencies()
+	if err != nil {
+		return err
+	}
+	if !r.backend.Privileged() {
+		return fault.New(fault.CodeRuntimePermission, "restart desktop transport", nil)
+	}
+	manifest, err := r.loadManifest(r.activeManifestPath())
+	if errors.Is(err, errRuntimeArtifactNotFound) {
+		return fault.New(fault.CodeRuntimeApplyFailed, "load active runtime manifest", err)
+	}
+	if err != nil {
+		return err
+	}
+	if manifest.Stopped {
+		return fault.New(fault.CodeRuntimeApplyFailed, "restart stopped runtime transport", nil)
+	}
+	if !r.manifestMetadataTrusted(manifest, dependencies) {
+		return fault.New(fault.CodeRuntimeProcessStale, "verify runtime metadata ownership", nil)
+	}
+	index, indexErr := r.backend.InterfaceIndex(manifest.Interface)
+	if indexErr != nil || index == 0 || (manifest.InterfaceIndex != 0 && index != manifest.InterfaceIndex) {
+		return fault.New(fault.CodeRuntimeApplyFailed, "verify live WireGuard interface", indexErr)
+	}
+	if manifest.Xray.PID > 0 {
+		alive, aliveErr := r.backend.ProcessAlive(manifest.Xray)
+		if aliveErr != nil {
+			return fault.New(fault.CodeRuntimeProcessStale, "verify Xray process identity", aliveErr)
+		}
+		if alive {
+			if stopErr := r.backend.Stop(manifest.Xray); stopErr != nil {
+				return fault.New(fault.CodeRuntimeApplyFailed, "stop stale Xray runtime", stopErr)
+			}
+		}
+	}
+	if err := r.waitForLoopbackAvailable(ctx, manifest.LoopbackAddress); err != nil {
+		return fault.New(fault.CodeRuntimeApplyFailed, "wait for Xray loopback socket", err)
+	}
+	identity, err := r.backend.Start(dependencies.xray, []string{"run", "-config", manifest.XrayConfigPath}, manifest.Revision, manifest.Xray.ConfigSHA256)
+	if err != nil {
+		return fault.New(fault.CodeRuntimeApplyFailed, "restart Xray runtime", err)
+	}
+	manifest.Xray = identity
+	manifest.Xray.ConfigPath = manifest.XrayConfigPath
+	manifest.Xray.ConfigSHA256 = identity.ConfigSHA256
+	manifest.Xray.Revision = manifest.Revision
+	if err := r.waitForXrayReady(ctx, manifest); err != nil {
+		_ = r.backend.Stop(manifest.Xray)
+		return fault.New(fault.CodeRuntimeApplyFailed, "verify restarted Xray runtime", err)
+	}
+	if err := r.saveManifest(r.activeManifestPath(), manifest); err != nil {
+		return err
+	}
+	if statsBackend, ok := r.backend.(wireGuardStatsBackend); ok {
+		if wgRaw, readErr := os.ReadFile(manifest.WGConfigPath); readErr == nil {
+			if peerKey := extractPrimaryPeerPublicKey(string(wgRaw)); peerKey != "" {
+				_ = statsBackend.NudgeWireGuardPeer(ctx, dependencies.wg, manifest.Interface, peerKey, manifest.LoopbackAddress)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Desktop) waitForLoopbackAvailable(ctx context.Context, address string) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		available, err := r.backend.LoopbackAvailable(address)
+		if err == nil && available {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return err
+			}
+			return errors.New("Xray loopback address remained in use")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func configArgument(args []string) string {

@@ -567,3 +567,80 @@ func privateRegularFilePlatform(path string) bool {
 	info, err := os.Lstat(path)
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0o600
 }
+
+func (b *osDesktopBackend) WireGuardPublicKey(ctx context.Context, wgPath, logicalName string) (string, error) {
+	realName, err := b.WireGuardInterfaceName(logicalName)
+	if err != nil {
+		return "", err
+	}
+	command := exec.CommandContext(ctx, wgPath, "show", realName, "public-key")
+	command.Env = darwinRuntimeCommandEnv(os.Environ(), wgPath)
+	command.Stdin = nil
+	raw, err := command.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (b *osDesktopBackend) ReclaimWireGuardInterface(_ context.Context, logicalName string) error {
+	realName, err := b.WireGuardInterfaceName(logicalName)
+	if err != nil {
+		return err
+	}
+	runtimeDir := b.wireGuardRuntimeDir
+	if runtimeDir == "" {
+		runtimeDir = darwinWireGuardRuntimeDir
+	}
+	sockPath := filepath.Join(runtimeDir, realName+".sock")
+	if removeErr := os.Remove(sockPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return removeErr
+	}
+	namePath := filepath.Join(runtimeDir, logicalName+".name")
+	if removeErr := os.Remove(namePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return removeErr
+	}
+	return nil
+}
+
+func (b *osDesktopBackend) WireGuardPeerStats(ctx context.Context, wgPath, logicalName string) (WireGuardStats, error) {
+	realName, err := b.WireGuardInterfaceName(logicalName)
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	env := darwinRuntimeCommandEnv(os.Environ(), wgPath)
+	hsCmd := exec.CommandContext(ctx, wgPath, "show", realName, "latest-handshakes")
+	hsCmd.Env = env
+	hsOut, err := hsCmd.Output()
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	txCmd := exec.CommandContext(ctx, wgPath, "show", realName, "transfer")
+	txCmd.Env = env
+	txOut, err := txCmd.Output()
+	if err != nil {
+		return WireGuardStats{}, err
+	}
+	rx, tx := parseWireGuardTransfer(string(txOut))
+	return WireGuardStats{
+		LatestHandshake: parseWireGuardHandshakes(string(hsOut)),
+		RxBytes:         rx,
+		TxBytes:         tx,
+	}, nil
+}
+
+func (b *osDesktopBackend) NudgeWireGuardPeer(ctx context.Context, wgPath, logicalName, peerPublicKey, endpoint string) error {
+	if strings.TrimSpace(peerPublicKey) == "" || strings.TrimSpace(endpoint) == "" {
+		return errors.New("invalid WireGuard peer nudge parameters")
+	}
+	realName, err := b.WireGuardInterfaceName(logicalName)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, wgPath, "set", realName, "peer", peerPublicKey, "endpoint", endpoint)
+	command.Env = darwinRuntimeCommandEnv(os.Environ(), wgPath)
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	return command.Run()
+}

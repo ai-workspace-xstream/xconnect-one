@@ -1063,3 +1063,40 @@ func TestFormatFaultErrorPreservesOperationChain(t *testing.T) {
 		t.Fatalf("must not leak raw non-fault cause error: %q", got)
 	}
 }
+
+func TestUpAndSyncHelpIncludeForegroundAndProcessModeFlags(t *testing.T) {
+	for _, sub := range []string{"up", "sync"} {
+		var stdout, stderr bytes.Buffer
+		err := runWithFactories(context.Background(), []string{sub, "--help"}, &stdout, &stderr, http.DefaultClient,
+			func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+			func(string) credential.Store { return &credential.MemoryStore{} },
+		)
+		if err != nil {
+			t.Fatalf("%s --help returned error: %v", sub, err)
+		}
+		if !strings.Contains(stderr.String(), "-foreground") || !strings.Contains(stderr.String(), "-process-mode") {
+			t.Fatalf("%s --help missing -foreground or -process-mode: %s", sub, stderr.String())
+		}
+	}
+}
+
+func TestNormalizeProcessModeValidation(t *testing.T) {
+	t.Setenv("XCONNECT_LINUX_PROCESS_MODE", "")
+	for _, valid := range []string{"", "auto", "systemd", "direct"} {
+		mode, err := normalizeProcessMode(valid)
+		if err != nil {
+			t.Fatalf("normalizeProcessMode(%q) unexpected error: %v", valid, err)
+		}
+		if mode != valid {
+			t.Fatalf("got %q want %q", mode, valid)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	err := runWithFactories(context.Background(), []string{"up", "--process-mode", "invalid-mode"}, &stdout, &stderr, http.DefaultClient,
+		func(string) overlayruntime.Interface { return &overlayruntime.Fake{} },
+		func(string) credential.Store { return &credential.MemoryStore{} },
+	)
+	if fault.Code(err) != fault.CodeInvalidInput {
+		t.Fatalf("expected CodeInvalidInput for invalid --process-mode, got %v", err)
+	}
+}

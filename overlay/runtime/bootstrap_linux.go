@@ -34,6 +34,7 @@ var linuxManagedXrayArtifacts = map[string]managedRuntimeArtifact{
 type bootstrapLinuxDependencies struct {
 	architecture string
 	effectiveUID func() int
+	hasSystemd   func() bool
 	lookPath     func(string) (string, error)
 	run          func(context.Context, string, ...string) error
 	client       *http.Client
@@ -49,12 +50,18 @@ func bootstrapPlatform(ctx context.Context, options BootstrapOptions) (Bootstrap
 	return bootstrapLinux(ctx, options, bootstrapLinuxDependencies{
 		architecture: goruntime.GOARCH,
 		effectiveUID: os.Geteuid,
+		hasSystemd:   linuxHasSystemd,
 		lookPath:     exec.LookPath,
 		run:          runBootstrapCommand,
 		client:       &http.Client{Timeout: 2 * time.Minute},
 		now:          func() time.Time { return time.Now().UTC() },
 		artifact:     artifact,
 	})
+}
+
+func linuxHasSystemd() bool {
+	info, err := os.Stat("/run/systemd/system")
+	return err == nil && info.IsDir()
 }
 
 func bootstrapLinux(ctx context.Context, options BootstrapOptions, dependencies bootstrapLinuxDependencies) (BootstrapResult, error) {
@@ -117,7 +124,10 @@ func bootstrapLinux(ctx context.Context, options BootstrapOptions, dependencies 
 }
 
 func ensureLinuxSystemRuntime(ctx context.Context, install bool, dependencies bootstrapLinuxDependencies) error {
-	required := []string{"wg", "wg-quick", "systemctl", "systemd-run"}
+	required := []string{"wg", "wg-quick"}
+	if dependencies.hasSystemd != nil && dependencies.hasSystemd() {
+		required = append(required, "systemctl", "systemd-run")
+	}
 	if missingCommands(required, dependencies.lookPath) == 0 {
 		return nil
 	}

@@ -873,6 +873,8 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	bootstrapRuntime := flags.Bool("bootstrap", false, "install or repair the approved managed runtime before starting")
 	runtimeReleaseBaseURL := flags.String("runtime-release-base-url", os.Getenv("XCONNECT_RUNTIME_RELEASE_BASE_URL"), "approved Xray release mirror base URL")
 	watch := flags.Bool("watch", false, "keep running and synchronize periodically")
+	foreground := flags.Bool("foreground", false, "run in foreground daemon mode with auto-recovery and graceful cleanup on SIGINT/SIGTERM (implies --watch)")
+	processMode := flags.String("process-mode", os.Getenv("XCONNECT_LINUX_PROCESS_MODE"), "Linux process supervision mode: auto, systemd, or direct")
 	interval := flags.Duration("interval", time.Minute, "watch sync interval")
 	noSudo := flags.Bool("no-sudo", false, "do not automatically invoke sudo when root privileges are required")
 	if err := flags.Parse(args); err != nil {
@@ -883,6 +885,12 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	}
 	if flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "parse up arguments", nil)
+	}
+	if _, err := normalizeProcessMode(*processMode); err != nil {
+		return err
+	}
+	if *foreground {
+		*watch = true
 	}
 	explicitFlags := make(map[string]bool)
 	flags.Visit(func(f *flag.Flag) {
@@ -950,8 +958,9 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	if err != nil {
 		return err
 	}
+	stStore := state.NewStore(*stateDirectory)
 	runtimeInstance := newRuntime(*stateDirectory)
-	manager := usecase.NewDeviceSessionManager(client, state.NewStore(*stateDirectory), credentials, runtimeInstance).WithSignedConfigV2()
+	manager := usecase.NewDeviceSessionManager(client, stStore, credentials, runtimeInstance).WithSignedConfigV2()
 	if *watch {
 		if firstResult, err := manager.Sync(ctx); err != nil {
 			if fault.Code(err) == fault.CodeRuntimePermission {
@@ -968,18 +977,7 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 		} else {
 			_ = writeJSON(stdout, firstResult)
 		}
-		loop := &usecase.SyncLoop{
-			Interval: *interval,
-			Runtime:  runtimeInstance,
-			Sync:     manager.Sync,
-			OnResult: func(res usecase.SyncResult) {
-				_ = writeJSON(stdout, res)
-			},
-			OnError: func(err error) {
-				_, _ = fmt.Fprintf(stderr, "xconnect: sync warning: %v\n", err)
-			},
-		}
-		return loop.Run(ctx)
+		return runSupervisedSyncLoop(ctx, client, stStore, runtimeInstance, manager.Sync, *interval, *foreground, stdout, stderr)
 	}
 	result, err := manager.Sync(ctx)
 	if err != nil {
