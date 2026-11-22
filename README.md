@@ -24,9 +24,12 @@
 ### 1. macOS (Apple Silicon / Intel)
 
 ```bash
-# Build from source (or install release binary)
-git clone https://github.com/ai-workspace-xstream/xconnect-one.git && cd xconnect-one
-CGO_ENABLED=0 go build -trimpath -o /opt/homebrew/bin/xconnect-one ./cmd/xconnect
+# One-shell build & install from source
+rm -rf /tmp/xconnect-one && \
+  git clone --depth 1 https://github.com/ai-workspace-xstream/xconnect-one.git /tmp/xconnect-one && \
+  (cd /tmp/xconnect-one && CGO_ENABLED=0 GOTOOLCHAIN=auto go build -trimpath -ldflags='-s -w' -o /tmp/xconnect-one/xconnect-one ./cmd/xconnect) && \
+  install -m 0755 /tmp/xconnect-one/xconnect-one /opt/homebrew/bin/xconnect-one && \
+  rm -rf /tmp/xconnect-one
 
 # Login, join gateway, and start
 xconnect-one login
@@ -42,15 +45,39 @@ sudo env XCONNECT_ONE_STATE_DIR="$HOME/.xconnect-one-user" \
   bash scripts/setup-xconnect-one-macos.sh
 ```
 
-### 2. Linux (VPS / Desktop)
+### 2. Linux (Debian / Ubuntu / Fedora)
 
 ```bash
-git clone https://github.com/ai-workspace-xstream/xconnect-one.git && cd xconnect-one
-CGO_ENABLED=0 go build -trimpath -o /usr/local/bin/xconnect-one ./cmd/xconnect
+# One-shell install (compatible with Debian, Ubuntu, and Fedora; auto-installs git/go if missing)
+set -euo pipefail
+SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    $SUDO apt-get update && $SUDO apt-get install -y --no-install-recommends git ca-certificates curl tar
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y git ca-certificates curl tar
+  fi
+fi
+if ! command -v go >/dev/null 2>&1; then
+  case "$(uname -m)" in
+    x86_64|amd64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
+  esac
+  curl -fsSL "https://go.dev/dl/go1.26.4.linux-${ARCH}.tar.gz" | $SUDO tar -C /usr/local -xzf -
+  export PATH="/usr/local/go/bin:$PATH"
+fi
+rm -rf /tmp/xconnect-one
+git clone --depth 1 https://github.com/ai-workspace-xstream/xconnect-one.git /tmp/xconnect-one
+(cd /tmp/xconnect-one && CGO_ENABLED=0 GOTOOLCHAIN=auto go build -trimpath -ldflags='-s -w' -o /tmp/xconnect-one/xconnect-one ./cmd/xconnect)
+$SUDO install -m 0755 /tmp/xconnect-one/xconnect-one /usr/local/bin/xconnect-one
+rm -rf /tmp/xconnect-one
+xconnect-one --version
 
+# Login, join gateway, and start
 xconnect-one login
 xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
-sudo xconnect-one up
+$SUDO xconnect-one up
 ```
 
 ### 3. Docker / Non-systemd Containers (e.g. Grok Bot)
