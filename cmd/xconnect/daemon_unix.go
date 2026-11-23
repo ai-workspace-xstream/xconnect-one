@@ -7,9 +7,51 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
+
+func preserveDaemonOwnership(stateDir, dirPath, filePath string) {
+	if os.Geteuid() != 0 {
+		return
+	}
+	uid, gid := 0, -1
+	found := false
+	if info, err := os.Lstat(stateDir); err == nil {
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid > 0 {
+			uid, gid, found = int(stat.Uid), int(stat.Gid), true
+		}
+	}
+	if !found {
+		rawUID := strings.TrimSpace(os.Getenv("SUDO_UID"))
+		if rawUID != "" {
+			if parsed, err := strconv.ParseUint(rawUID, 10, 32); err == nil && parsed > 0 {
+				uid, found = int(parsed), true
+				if rawGID := strings.TrimSpace(os.Getenv("SUDO_GID")); rawGID != "" {
+					if parsedGID, gidErr := strconv.ParseUint(rawGID, 10, 32); gidErr == nil {
+						gid = int(parsedGID)
+					}
+				} else if u, lookupErr := user.LookupId(rawUID); lookupErr == nil {
+					if parsedGID, gidErr := strconv.ParseUint(u.Gid, 10, 32); gidErr == nil {
+						gid = int(parsedGID)
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		return
+	}
+	if dirPath != "" {
+		_ = os.Chown(dirPath, uid, gid)
+	}
+	if filePath != "" {
+		_ = os.Chown(filePath, uid, gid)
+	}
+}
 
 func configureDetachedProcess(cmd *exec.Cmd) {
 	if cmd == nil {

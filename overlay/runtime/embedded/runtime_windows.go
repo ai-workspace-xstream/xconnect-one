@@ -18,6 +18,8 @@ func isProcessAlive(pid int) bool {
 	return true
 }
 
+func preserveRuntimeOwnership(_, _, _ string) {}
+
 func signalProcessStop(pid int) error {
 	if pid <= 0 {
 		return nil

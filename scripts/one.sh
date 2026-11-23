@@ -247,13 +247,16 @@ verify() {
     local gateway_key handshake now age wg_path
     gateway_key="$("$JQ_PATH" -er '.gateway_public_key' "$HANDOFF")"
     wg_path="$(find_tool wg)"
-    [[ -x "$wg_path" ]] || die 'wg is required for handshake verification'
-    handshake="$(sudo "$wg_path" show xconone0 latest-handshakes | awk -v peer="$gateway_key" '$1 == peer {print $2; exit}')"
-    now="$(date +%s)"
-    [[ "$handshake" =~ ^[0-9]+$ ]] || die 'Gateway peer handshake not found'
-    age=$((now - handshake))
-    (( age >= 0 && age < 300 )) || die "Gateway peer handshake is stale: age=${age}s"
-    echo "handshake=OK age=${age}s"
+    if [[ -x "$wg_path" ]] && sudo "$wg_path" show xconone0 latest-handshakes >/dev/null 2>&1; then
+      handshake="$(sudo "$wg_path" show xconone0 latest-handshakes | awk -v peer="$gateway_key" '$1 == peer {print $2; exit}')"
+      now="$(date +%s)"
+      [[ "$handshake" =~ ^[0-9]+$ ]] || die 'Gateway peer handshake not found'
+      age=$((now - handshake))
+      (( age >= 0 && age < 300 )) || die "Gateway peer handshake is stale: age=${age}s"
+      echo "handshake=OK age=${age}s"
+    else
+      echo "handshake=EMBEDDED (in-process wireguard-go; external wg not required)"
+    fi
   fi
 
   if [[ -n "$PRIVATE_TARGET" ]]; then

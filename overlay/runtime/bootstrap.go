@@ -32,6 +32,7 @@ type BootstrapOptions struct {
 
 type BootstrapResult struct {
 	SchemaVersion      int       `json:"schema_version"`
+	RuntimeMode        string    `json:"runtime_mode,omitempty"`
 	Platform           string    `json:"platform"`
 	Architecture       string    `json:"architecture"`
 	XrayVersion        string    `json:"xray_version"`

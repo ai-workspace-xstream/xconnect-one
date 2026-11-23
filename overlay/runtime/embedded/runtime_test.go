@@ -280,3 +280,25 @@ func TestEmbeddedRuntimeLifecycleAndLevel1HotRestart(t *testing.T) {
 	// Confirm the compiled test binary runs quickly after cleanup.
 	time.Sleep(10 * time.Millisecond)
 }
+
+func TestEmbeddedRuntimeReadsActiveManifestFromAnotherInstance(t *testing.T) {
+	stateDir := t.TempDir()
+	writer := New(stateDir)
+	writer.ifaceName = "xconone0"
+	if err := writer.writeActiveManifestLocked(model.Config{
+		Revision:  "rev-manifest",
+		WireGuard: model.WireGuardConfig{Address: "10.66.0.6/32"},
+		Transport: model.TransportConfig{LocalPort: 51830},
+	}); err != nil {
+		t.Fatalf("writeActiveManifestLocked: %v", err)
+	}
+
+	reader := New(stateDir)
+	status, err := reader.Status(context.Background())
+	if err != nil {
+		t.Fatalf("reader.Status: %v", err)
+	}
+	if !status.Applied || !status.ManagedRuntime || status.RuntimeVersion != "embedded" || status.Revision != "rev-manifest" || status.Interface != "xconone0" {
+		t.Fatalf("unexpected reader status: %+v", status)
+	}
+}

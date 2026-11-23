@@ -145,7 +145,7 @@ func extractRuntimeMode(args []string, envDefault string) (string, []string, err
 }
 
 func platformRuntime(goos, stateDirectory string) overlayruntime.Interface {
-	return platformRuntimeWithMode(goos, stateDirectory, "external")
+	return platformRuntimeWithMode(goos, stateDirectory, "embedded")
 }
 
 func platformRuntimeWithMode(goos, stateDirectory, runtimeMode string) overlayruntime.Interface {
@@ -173,55 +173,109 @@ func runWithRuntimeFactory(ctx context.Context, args []string, stdout, stderr io
 	return runWithFactories(ctx, args, stdout, stderr, httpClient, newRuntime, func(string) credential.Store { return &credential.MemoryStore{} })
 }
 
-func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
-	// Strip out non-positional global flags like --state-dir if passed ahead or trailing
-	filteredArgs := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
+func extractLeadingStateDirFlags(args []string) ([]string, []string, error) {
+	leadingFlags := make([]string, 0, 2)
+	i := 0
+	for i < len(args) {
 		arg := args[i]
 		if arg == "-v" || arg == "-V" || arg == "--version" || arg == "version" {
-			return runVersion(args[i+1:], stdout, stderr)
+			return nil, args[i:], nil
 		}
-		filteredArgs = append(filteredArgs, arg)
+		if arg == "--state-dir" || arg == "-state-dir" {
+			if i+1 >= len(args) {
+				return nil, nil, fault.New(fault.CodeInvalidInput, "parse --state-dir flag: missing value", nil)
+			}
+			leadingFlags = append(leadingFlags, arg, args[i+1])
+			i += 2
+			continue
+		}
+		if strings.HasPrefix(arg, "--state-dir=") || strings.HasPrefix(arg, "-state-dir=") {
+			leadingFlags = append(leadingFlags, arg)
+			i++
+			continue
+		}
+		break
+	}
+	return leadingFlags, args[i:], nil
+}
+
+func injectLeadingFlagsAfterAction(subArgs, leadingFlags []string) []string {
+	if len(leadingFlags) == 0 {
+		return subArgs
+	}
+	if len(subArgs) == 0 {
+		return append([]string(nil), leadingFlags...)
+	}
+	merged := make([]string, 0, len(subArgs)+len(leadingFlags))
+	merged = append(merged, subArgs[0])
+	merged = append(merged, leadingFlags...)
+	merged = append(merged, subArgs[1:]...)
+	return merged
+}
+
+func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
+	leadingStateFlags, positionalArgs, err := extractLeadingStateDirFlags(args)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < len(positionalArgs); i++ {
+		arg := positionalArgs[i]
+		if arg == "-v" || arg == "-V" || arg == "--version" || arg == "version" {
+			return runVersion(positionalArgs[i+1:], stdout, stderr)
+		}
 	}
 
-	if len(filteredArgs) == 0 {
+	if len(positionalArgs) == 0 {
 		return fault.New(fault.CodeInvalidInput, "expected login, logout, gateway, register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, policy, or version", nil)
 	}
-	switch filteredArgs[0] {
+	cmd := positionalArgs[0]
+	subArgs := positionalArgs[1:]
+	if len(leadingStateFlags) > 0 {
+		switch cmd {
+		case "gateway", "gateways", "credential", "runtime", "admin", "policy":
+			subArgs = injectLeadingFlagsAfterAction(subArgs, leadingStateFlags)
+		default:
+			merged := make([]string, 0, len(leadingStateFlags)+len(subArgs))
+			merged = append(merged, leadingStateFlags...)
+			merged = append(merged, subArgs...)
+			subArgs = merged
+		}
+	}
+	switch cmd {
 	case "version":
-		return runVersion(filteredArgs[1:], stdout, stderr)
+		return runVersion(subArgs, stdout, stderr)
 	case "login":
-		return runLogin(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runLogin(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "logout":
-		return runLogout(ctx, args[1:], stdout, stderr)
+		return runLogout(ctx, subArgs, stdout, stderr)
 	case "gateway", "gateways":
-		return runGateway(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runGateway(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "path-manager":
-		return overlayruntime.RunPathManager(ctx, args[1:])
+		return overlayruntime.RunPathManager(ctx, subArgs)
 	case "register":
-		return runRegister(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runRegister(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "join":
-		return runJoin(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runJoin(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "sync":
-		return runSync(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runSync(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "up":
-		return runUpWithDependencies(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runUpWithDependencies(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "down":
-		return runDown(ctx, args[1:], stdout, stderr, newRuntime)
+		return runDown(ctx, subArgs, stdout, stderr, newRuntime)
 	case "leave":
-		return runLeave(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runLeave(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "status":
-		return runStatus(ctx, args[1:], stdout, stderr, newRuntime, newCredentials)
+		return runStatus(ctx, subArgs, stdout, stderr, newRuntime, newCredentials)
 	case "diagnose":
-		return runDiagnose(ctx, args[1:], stdout, stderr, newRuntime, newCredentials)
+		return runDiagnose(ctx, subArgs, stdout, stderr, newRuntime, newCredentials)
 	case "runtime":
-		return runRuntime(ctx, args[1:], stdout, stderr)
+		return runRuntime(ctx, subArgs, stdout, stderr, newRuntime)
 	case "credential":
-		return runCredential(ctx, args[1:], stdout, stderr, httpClient, newRuntime, newCredentials)
+		return runCredential(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "admin":
-		return runAdmin(ctx, args[1:], stdout, stderr, httpClient)
+		return runAdmin(ctx, subArgs, stdout, stderr, httpClient)
 	case "policy":
-		return runPolicy(ctx, args[1:], stdout, stderr, httpClient)
+		return runPolicy(ctx, subArgs, stdout, stderr, httpClient)
 	default:
 		return fault.New(fault.CodeInvalidInput, "unknown command", nil)
 	}
@@ -383,15 +437,9 @@ func runJoin(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	if err != nil {
 		return err
 	}
-	if *bootstrapRuntime {
-		if _, err := overlayruntime.Bootstrap(ctx, overlayruntime.BootstrapOptions{
-			StateDirectory:        *stateDirectory,
-			ReleaseBaseURL:        *runtimeReleaseBaseURL,
-			InstallSystemPackages: true,
-		}); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintln(stderr, "xconnect: managed runtime ready")
+	tunnelRuntime := newRuntime(*stateDirectory)
+	if err := ensureBootstrapReady(ctx, *bootstrapRuntime, tunnelRuntime, *stateDirectory, *runtimeReleaseBaseURL, stderr); err != nil {
+		return err
 	}
 	if *networkID == "" {
 		*networkID = target.NetworkID
@@ -427,7 +475,6 @@ func runJoin(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 		return err
 	}
 	defer operation.Release()
-	tunnelRuntime := newRuntime(*stateDirectory)
 	result, err := usecase.NewJoiner(client, store, tunnelRuntime).WithCredentialStore(newCredentials(*stateDirectory)).WithConfigContract(contract).Join(ctx, usecase.JoinRequest{
 		Server:     target.Controller,
 		DeviceID:   *deviceID,
@@ -483,22 +530,15 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	if err != nil {
 		return err
 	}
-	if *bootstrapRuntime {
-		if _, err := overlayruntime.Bootstrap(ctx, overlayruntime.BootstrapOptions{
-			StateDirectory:        *stateDirectory,
-			ReleaseBaseURL:        *runtimeReleaseBaseURL,
-			InstallSystemPackages: true,
-		}); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintln(stderr, "xconnect: managed runtime ready")
+	runtimeInstance := newRuntime(*stateDirectory)
+	if err := ensureBootstrapReady(ctx, *bootstrapRuntime, runtimeInstance, *stateDirectory, *runtimeReleaseBaseURL, stderr); err != nil {
+		return err
 	}
 	client, err := controlplane.New(record.Controller, "", httpClient)
 	if err != nil {
 		return err
 	}
 	stStore := state.NewStore(*stateDirectory)
-	runtimeInstance := newRuntime(*stateDirectory)
 	manager := usecase.NewDeviceSessionManager(client, stStore, credentials, runtimeInstance)
 	if *signedConfigV2 {
 		manager.WithSignedConfigV2()
@@ -512,7 +552,8 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 		} else {
 			_ = writeJSON(stdout, firstResult)
 		}
-		return runSupervisedSyncLoop(ctx, client, stStore, runtimeInstance, manager.Sync, *interval, *foreground, stdout, stderr)
+		_, isEmbedded := runtimeInstance.(*embedded.Runtime)
+		return runSupervisedSyncLoop(ctx, client, stStore, runtimeInstance, manager.Sync, *interval, *foreground || isEmbedded, stdout, stderr)
 	}
 	result, err := manager.Sync(ctx)
 	if err != nil {
@@ -840,7 +881,26 @@ func runDiagnose(ctx context.Context, args []string, stdout, stderr io.Writer, n
 	return writeJSON(stdout, result)
 }
 
-func runRuntime(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func ensureBootstrapReady(ctx context.Context, bootstrapRequested bool, runtimeInstance overlayruntime.Interface, stateDirectory, releaseBaseURL string, stderr io.Writer) error {
+	if !bootstrapRequested {
+		return nil
+	}
+	if _, isEmbedded := runtimeInstance.(*embedded.Runtime); isEmbedded {
+		_, _ = fmt.Fprintln(stderr, "xconnect: embedded runtime already built in (no external xray or wg-quick required)")
+		return nil
+	}
+	if _, err := overlayruntime.Bootstrap(ctx, overlayruntime.BootstrapOptions{
+		StateDirectory:        stateDirectory,
+		ReleaseBaseURL:        releaseBaseURL,
+		InstallSystemPackages: true,
+	}); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(stderr, "xconnect: managed runtime ready")
+	return nil
+}
+
+func runRuntime(ctx context.Context, args []string, stdout, stderr io.Writer, newRuntime runtimeFactory) error {
 	if len(args) == 0 || args[0] != "bootstrap" {
 		return fault.New(fault.CodeInvalidInput, "expected runtime bootstrap", nil)
 	}
@@ -851,6 +911,20 @@ func runRuntime(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	installSystemPackages := flags.Bool("install-system-packages", true, "install required WireGuard packages using the supported platform package manager")
 	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "parse runtime bootstrap arguments", err)
+	}
+	*stateDirectory = expandUserPath(*stateDirectory)
+	if _, isEmbedded := newRuntime(*stateDirectory).(*embedded.Runtime); isEmbedded {
+		return writeJSON(stdout, overlayruntime.BootstrapResult{
+			SchemaVersion:      1,
+			RuntimeMode:        "embedded",
+			Platform:           runtime.GOOS,
+			Architecture:       runtime.GOARCH,
+			XrayVersion:        "embedded",
+			XrayPath:           "embedded",
+			SystemWireGuard:    false,
+			InstalledAt:        time.Now().UTC(),
+			AlreadyProvisioned: true,
+		})
 	}
 	result, err := overlayruntime.Bootstrap(ctx, overlayruntime.BootstrapOptions{
 		StateDirectory:        *stateDirectory,

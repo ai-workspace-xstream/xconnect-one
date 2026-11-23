@@ -235,7 +235,7 @@ func LoadUserSession(stateDir string) (UserSession, error) {
 		}
 		return UserSession{}, fault.New(fault.CodeCredentialStorage, "validate user session file", err)
 	}
-	if !privateOwnedRegular(info) {
+	if !privateOwnedRegularForStateDir(info, stateDir) {
 		return UserSession{}, fault.New(fault.CodeCredentialStorage, "validate user session file", nil)
 	}
 	file, err := os.Open(path)

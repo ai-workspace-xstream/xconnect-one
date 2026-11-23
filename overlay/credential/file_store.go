@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
@@ -35,7 +36,7 @@ func (s *FileStore) Load(context.Context) (Record, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return Record{}, ErrNotFound
 	}
-	if err != nil || !privateOwnedRegular(info) {
+	if err != nil || !privateOwnedRegularForStateDir(info, filepath.Dir(filepath.Dir(s.path))) {
 		return Record{}, fault.New(fault.CodeCredentialStorage, "validate device credential file", nil)
 	}
 	file, err := os.Open(s.path)
@@ -160,6 +161,33 @@ func ensurePrivateOwnedDirectory(path string) error {
 
 func privateOwnedRegular(info os.FileInfo) bool {
 	return info.Mode().IsRegular() && info.Mode().Perm() == 0o600 && ownedByCurrentUser(info)
+}
+
+func privateOwnedRegularForStateDir(info os.FileInfo, stateDir string) bool {
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return false
+	}
+	if ownedByCurrentUser(info) {
+		return true
+	}
+	if os.Geteuid() != 0 || strings.TrimSpace(stateDir) == "" {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	stateInfo, stateErr := os.Lstat(stateDir)
+	protectedInfo, protErr := os.Lstat(filepath.Join(stateDir, "protected"))
+	if stateErr != nil || protErr != nil || !stateInfo.IsDir() || !protectedInfo.IsDir() {
+		return false
+	}
+	if protectedInfo.Mode().Perm() != 0o700 {
+		return false
+	}
+	stateOwner, ok1 := directoryOwnerUID(stateInfo)
+	protOwner, ok2 := directoryOwnerUID(protectedInfo)
+	return ok1 && ok2 && stat.Uid == stateOwner && stat.Uid == protOwner
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
