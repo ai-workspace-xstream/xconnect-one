@@ -20,6 +20,7 @@ import (
 )
 
 type wgHost struct {
+	opMu       sync.Mutex
 	mu         sync.Mutex
 	dev        *device.Device
 	tunDev     tun.Device
@@ -37,6 +38,21 @@ func (h *wgHost) Start(tunDev tun.Device, ifaceName, privKeyB64 string, cfg mode
 	if err != nil {
 		return err
 	}
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
+
+	h.mu.Lock()
+	old := h.dev
+	h.dev = nil
+	h.tunDev = nil
+	h.ifaceName = ""
+	h.peerPubHex = ""
+	h.localPort = 0
+	h.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
 	if err := dev.IpcSet(uapi); err != nil {
 		dev.Close()
@@ -62,6 +78,8 @@ func (h *wgHost) UpdateConfig(privKeyB64 string, cfg model.Config) error {
 	if err != nil {
 		return err
 	}
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	h.mu.Lock()
 	dev := h.dev
 	h.mu.Unlock()
@@ -79,6 +97,8 @@ func (h *wgHost) UpdateConfig(privKeyB64 string, cfg model.Config) error {
 }
 
 func (h *wgHost) NudgePeer() error {
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	h.mu.Lock()
 	dev := h.dev
 	peerPubHex := h.peerPubHex
@@ -98,6 +118,8 @@ func (h *wgHost) NudgePeer() error {
 }
 
 func (h *wgHost) Stats() (latestHandshake time.Time, rxBytes, txBytes uint64, err error) {
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	h.mu.Lock()
 	dev := h.dev
 	h.mu.Unlock()
@@ -125,6 +147,8 @@ func (h *wgHost) Running() bool {
 }
 
 func (h *wgHost) Close() error {
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	h.mu.Lock()
 	dev := h.dev
 	h.dev = nil
