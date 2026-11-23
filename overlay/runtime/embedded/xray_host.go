@@ -14,6 +14,7 @@ import (
 )
 
 type xrayHost struct {
+	opMu       sync.Mutex
 	mu         sync.Mutex
 	instance   *core.Instance
 	configJSON []byte
@@ -28,7 +29,9 @@ func (h *xrayHost) Start(config model.Config) error {
 	if err != nil {
 		return fmt.Errorf("render embedded xray config: %w", err)
 	}
-	return h.startJSON(raw)
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
+	return h.startJSONLocked(raw)
 }
 
 func (h *xrayHost) Update(config model.Config) (bool, error) {
@@ -36,13 +39,15 @@ func (h *xrayHost) Update(config model.Config) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("render embedded xray config: %w", err)
 	}
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	h.mu.Lock()
 	unchanged := h.instance != nil && bytes.Equal(h.configJSON, raw)
 	h.mu.Unlock()
 	if unchanged {
 		return false, nil
 	}
-	if err := h.startJSON(raw); err != nil {
+	if err := h.startJSONLocked(raw); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -52,7 +57,7 @@ func (h *xrayHost) Restart(config model.Config) error {
 	return h.Start(config)
 }
 
-func (h *xrayHost) startJSON(raw []byte) error {
+func (h *xrayHost) startJSONLocked(raw []byte) error {
 	pbCfg, err := serial.LoadJSONConfig(bytes.NewReader(raw))
 	if err != nil {
 		return fmt.Errorf("decode embedded xray protobuf config: %w", err)
@@ -63,11 +68,13 @@ func (h *xrayHost) startJSON(raw []byte) error {
 	}
 
 	h.mu.Lock()
-	if h.instance != nil {
-		_ = h.instance.Close()
-		h.instance = nil
-	}
+	old := h.instance
+	h.instance = nil
+	h.configJSON = nil
 	h.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
 
 	if err := inst.Start(); err != nil {
 		_ = inst.Close()
@@ -90,6 +97,8 @@ func (h *xrayHost) Running() bool {
 }
 
 func (h *xrayHost) Close() error {
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 	h.mu.Lock()
 	inst := h.instance
 	h.instance = nil

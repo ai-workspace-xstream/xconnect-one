@@ -9,11 +9,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const privateStateSDDL = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)"
+const (
+	privateStateDirSDDL  = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)"
+	privateStateFileSDDL = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)"
+)
 
-func secureStateDirectory(path string) error { return setPrivateStateACL(path) }
+func secureStateDirectory(path string) error { return setPrivateStateACL(path, privateStateDirSDDL) }
 
-func secureStateFile(path string) error { return setPrivateStateACL(path) }
+func secureStateFile(path string) error { return setPrivateStateACL(path, privateStateFileSDDL) }
 
 func preserveSudoDirectoryOwnership(string, bool) {}
 
@@ -32,11 +35,11 @@ func replaceStateFile(source, target string) error {
 }
 
 func privateStateDirectory(path string, info os.FileInfo) bool {
-	return info != nil && info.IsDir() && hasPrivateStateACL(path)
+	return info != nil && info.IsDir() && hasPrivateStateACL(path, true)
 }
 
 func privateStateRegular(path string, info os.FileInfo) bool {
-	return info != nil && info.Mode().IsRegular() && hasPrivateStateACL(path)
+	return info != nil && info.Mode().IsRegular() && hasPrivateStateACL(path, false)
 }
 
 func statePermissionOK(path string, info os.FileInfo, expected os.FileMode) bool {
@@ -45,16 +48,16 @@ func statePermissionOK(path string, info os.FileInfo, expected os.FileMode) bool
 	}
 	switch expected {
 	case 0o700:
-		return info.IsDir() && hasPrivateStateACL(path)
+		return info.IsDir() && hasPrivateStateACL(path, true)
 	case 0o600:
-		return info.Mode().IsRegular() && hasPrivateStateACL(path)
+		return info.Mode().IsRegular() && hasPrivateStateACL(path, false)
 	default:
 		return false
 	}
 }
 
-func setPrivateStateACL(path string) error {
-	securityDescriptor, err := windows.SecurityDescriptorFromString(privateStateSDDL)
+func setPrivateStateACL(path, sddl string) error {
+	securityDescriptor, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return err
 	}
@@ -73,7 +76,7 @@ func setPrivateStateACL(path string) error {
 	)
 }
 
-func hasPrivateStateACL(path string) bool {
+func hasPrivateStateACL(path string, isDir bool) bool {
 	securityDescriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil || securityDescriptor == nil {
 		return false
@@ -99,11 +102,17 @@ func hasPrivateStateACL(path string) bool {
 	// Windows may retain the auto-inherited marker after an ACL is protected.
 	// It is metadata, not an additional principal grant.
 	body = strings.TrimPrefix(body, "AI")
-	for _, ace := range []string{"(A;;FA;;;SY)", "(A;;FA;;;BA)", "(A;;FA;;;OW)"} {
-		if strings.Count(body, ace) != 1 {
+	for _, principal := range []string{"SY", "BA", "OW"} {
+		fileACE := "(A;;FA;;;" + principal + ")"
+		dirACE := "(A;OICI;FA;;;" + principal + ")"
+		switch {
+		case isDir && strings.Count(body, dirACE) == 1 && strings.Count(body, fileACE) == 0:
+			body = strings.Replace(body, dirACE, "", 1)
+		case strings.Count(body, fileACE) == 1 && (!isDir || strings.Count(body, dirACE) == 0):
+			body = strings.Replace(body, fileACE, "", 1)
+		default:
 			return false
 		}
-		body = strings.Replace(body, ace, "", 1)
 	}
 	return body == ""
 }

@@ -242,7 +242,6 @@ func (r *Runtime) Down(ctx context.Context) error {
 		r.activePrivKey = ""
 		r.revision = ""
 		r.ifaceName = ""
-		r.mu.Unlock()
 
 		var errs []error
 		if iface != "" {
@@ -257,6 +256,7 @@ func (r *Runtime) Down(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 		r.removeActiveManifest()
+		r.mu.Unlock()
 		if len(errs) > 0 {
 			return fault.New(fault.CodeRuntimeApplyFailed, "stop embedded runtime", errors.Join(errs...))
 		}

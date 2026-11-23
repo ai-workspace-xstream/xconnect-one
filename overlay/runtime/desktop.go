@@ -213,37 +213,37 @@ func (r *Desktop) Apply(ctx context.Context, request ApplyRequest) (ApplyResult,
 			activeErr = errRuntimeArtifactNotFound
 		} else {
 			if healthy && active.PathManager != nil && request.Config.Mesh != nil && !meshMatches(active, request.Config.Mesh) {
-			handled, err := r.reconcileMesh(ctx, active, request, dependencies)
-			if err != nil {
-				return ApplyResult{}, fault.New(fault.CodeRuntimeApplyFailed, "reconcile mesh peers", err)
-			}
-			if handled {
-				return applyResult(request.Config), nil
-			}
-		}
-		if healthy && active.PathManager != nil && request.Config.Mesh != nil && active.Revision != request.Config.Revision && meshMatches(active, request.Config.Mesh) {
-			handled, err := r.reconcileMesh(ctx, active, request, dependencies)
-			if err != nil {
-				return ApplyResult{}, err
-			}
-			if handled {
-				return applyResult(request.Config), nil
-			}
-		}
-		if healthy && active.Revision == request.Config.Revision && meshMatches(active, request.Config.Mesh) {
-			if request.Config.Mesh != nil {
-				if err := refreshMeshExpiry(&active, request.Config.Mesh.ExpiresAt); err != nil {
-					return ApplyResult{}, err
+				handled, err := r.reconcileMesh(ctx, active, request, dependencies)
+				if err != nil {
+					return ApplyResult{}, fault.New(fault.CodeRuntimeApplyFailed, "reconcile mesh peers", err)
 				}
-				if err := r.saveManifest(r.activeManifestPath(), active); err != nil {
-					return ApplyResult{}, err
+				if handled {
+					return applyResult(request.Config), nil
 				}
 			}
-			if err := r.cleanupRetainedRevisions(active); err != nil {
-				return ApplyResult{}, err
+			if healthy && active.PathManager != nil && request.Config.Mesh != nil && active.Revision != request.Config.Revision && meshMatches(active, request.Config.Mesh) {
+				handled, err := r.reconcileMesh(ctx, active, request, dependencies)
+				if err != nil {
+					return ApplyResult{}, err
+				}
+				if handled {
+					return applyResult(request.Config), nil
+				}
 			}
-			return applyResult(request.Config), nil
-		}
+			if healthy && active.Revision == request.Config.Revision && meshMatches(active, request.Config.Mesh) {
+				if request.Config.Mesh != nil {
+					if err := refreshMeshExpiry(&active, request.Config.Mesh.ExpiresAt); err != nil {
+						return ApplyResult{}, err
+					}
+					if err := r.saveManifest(r.activeManifestPath(), active); err != nil {
+						return ApplyResult{}, err
+					}
+				}
+				if err := r.cleanupRetainedRevisions(active); err != nil {
+					return ApplyResult{}, err
+				}
+				return applyResult(request.Config), nil
+			}
 		}
 	}
 

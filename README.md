@@ -31,10 +31,10 @@ rm -rf /tmp/xconnect-one && \
   install -m 0755 /tmp/xconnect-one/xconnect-one /opt/homebrew/bin/xconnect-one && \
   rm -rf /tmp/xconnect-one
 
-# Login, join gateway, and start
+# Login, join gateway, and start (add -D/--daemon for background daemon mode)
 xconnect-one login
 xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
-sudo xconnect-one up
+sudo xconnect-one up -D
 ```
 
 Configure root LaunchDaemon autostart:
@@ -65,10 +65,10 @@ $SUDO install -m 0755 /tmp/xconnect-one/xconnect-one /usr/local/bin/xconnect-one
 rm -rf /tmp/xconnect-one
 xconnect-one --version
 
-# Login, join gateway, and start
+# Login, join gateway, and start (add -D/--daemon for background daemon mode)
 xconnect-one login
 xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
-$SUDO xconnect-one up
+$SUDO xconnect-one up -D
 ```
 
 ### 3. Docker / Non-systemd Containers (e.g. Grok Bot)
@@ -89,6 +89,8 @@ docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
 .\xconnect-one.exe login
 .\xconnect-one.exe join --gateway https://ph-xconnect-gateway-01.svc.plus
 .\xconnect-one.exe up
+# Or run detached in the background:
+.\xconnect-one.exe up -D
 ```
 
 > Invite-based enrollment also works on all platforms:
@@ -102,8 +104,8 @@ docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
 | :--- | :--- |
 | `xconnect-one login` | Authenticate with `accounts.svc.plus` |
 | `xconnect-one join [--gateway <url>]` | Enroll device and fetch signed config |
-| `xconnect-one up [--runtime=embedded\|external]` | Start overlay tunnel and supervision loop |
-| `xconnect-one down` | Stop tunnel and clean up interface/routes |
+| `xconnect-one up [-D\|--daemon] [--log-file <path>] [--runtime=embedded\|external]` | Start overlay tunnel and supervision loop (foreground by default, or background daemon with `-D` / `--daemon`; default log `<state-dir>/runtime/xconnect-one.log`) |
+| `xconnect-one down` | Stop tunnel/background daemon and clean up interface/routes |
 | `xconnect-one status` / `diagnose` | Inspect tunnel status and runtime health |
 
 ---

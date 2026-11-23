@@ -588,6 +588,13 @@ func runDown(ctx context.Context, args []string, stdout, stderr io.Writer, newRu
 		fmt.Fprintf(stderr, "Note: default state directory %q is %s; using %q (or pass --state-dir)\n", primaryStateDir, fallbackReason, *stateDirectory)
 	}
 	result, err := usecase.Down(ctx, state.NewStore(*stateDirectory), newRuntime(*stateDirectory))
+	if err == nil {
+		var stoppedDaemon bool
+		stoppedDaemon, err = stopRecordedDaemon(*stateDirectory)
+		if stoppedDaemon {
+			result.AlreadyInState = false
+		}
+	}
 	if err != nil {
 		if fault.Code(err) == fault.CodeRuntimePermission {
 			if canAutoElevateWithSudo() {

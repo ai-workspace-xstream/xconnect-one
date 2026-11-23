@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -879,6 +880,9 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	runtimeReleaseBaseURL := flags.String("runtime-release-base-url", os.Getenv("XCONNECT_RUNTIME_RELEASE_BASE_URL"), "approved Xray release mirror base URL")
 	watch := flags.Bool("watch", false, "keep running and synchronize periodically")
 	foreground := flags.Bool("foreground", false, "run in foreground daemon mode with auto-recovery and graceful cleanup on SIGINT/SIGTERM (implies --watch)")
+	daemonShort := flags.Bool("D", false, "run in background daemon mode")
+	daemonLong := flags.Bool("daemon", false, "run in background daemon mode (alias for -D)")
+	logFile := flags.String("log-file", "", "log file path for background daemon mode (-D)")
 	processMode := flags.String("process-mode", os.Getenv("XCONNECT_LINUX_PROCESS_MODE"), "Linux process supervision mode: auto, systemd, or direct")
 	interval := flags.Duration("interval", time.Minute, "watch sync interval")
 	noSudo := flags.Bool("no-sudo", false, "do not automatically invoke sudo when root privileges are required")
@@ -894,6 +898,11 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	if _, err := normalizeProcessMode(*processMode); err != nil {
 		return err
 	}
+	isDaemonChild := os.Getenv(daemonChildEnvVar) == "1"
+	daemonMode := (*daemonShort || *daemonLong) && !isDaemonChild
+	if daemonMode && *foreground {
+		return fault.New(fault.CodeInvalidInput, "cannot combine -D/--daemon with --foreground", nil)
+	}
 	if *foreground {
 		*watch = true
 	}
@@ -908,7 +917,12 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	if err := credential.EnsureWritableStateDir(*stateDirectory); err != nil {
 		return err
 	}
-	if *watch {
+	if isDaemonChild {
+		defer func() {
+			_ = removeDaemonPIDIfSelf(*stateDirectory)
+		}()
+	}
+	if *watch || daemonMode {
 		if err := usecase.ValidateSyncInterval(*interval); err != nil {
 			return err
 		}
@@ -965,6 +979,30 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	}
 	stStore := state.NewStore(*stateDirectory)
 	runtimeInstance := newRuntime(*stateDirectory)
+	if daemonMode {
+		if _, isEmbedded := runtimeInstance.(*embedded.Runtime); isEmbedded && runtime.GOOS != "windows" && os.Geteuid() != 0 {
+			return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, fault.New(fault.CodeRuntimePermission, "start embedded daemon runtime", nil))
+		}
+		resolvedLogFile := expandUserPath(*logFile)
+		runtimeMode := strings.ToLower(strings.TrimSpace(os.Getenv("XCONNECT_ONE_RUNTIME")))
+		res, err := startDaemonProcessFunc(ctx, daemonUpOptions{
+			StateDir:    *stateDirectory,
+			LogFile:     resolvedLogFile,
+			RuntimeMode: runtimeMode,
+			OrigArgs:    args,
+		})
+		if err != nil {
+			return err
+		}
+		if res.AlreadyRunning {
+			_, _ = fmt.Fprintf(stderr, "xconnect: background daemon already running (pid=%d, log=%s); stop with 'xconnect-one down'\n", res.PID, res.LogFile)
+		} else if !res.Ready {
+			_, _ = fmt.Fprintf(stderr, "xconnect: background daemon started (pid=%d) but tunnel is still initializing; inspect logs at %s\n", res.PID, res.LogFile)
+		} else {
+			_, _ = fmt.Fprintf(stderr, "xconnect: running in background (pid=%d, log=%s); stop with 'xconnect-one down'\n", res.PID, res.LogFile)
+		}
+		return writeJSON(stdout, res)
+	}
 	if _, isEmbedded := runtimeInstance.(*embedded.Runtime); isEmbedded && !*watch {
 		// Embedded runtime hosts wireguard-go and xray-core inside this process,
 		// so 'up' stays supervised in foreground mode unless run externally.
@@ -972,6 +1010,19 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 		*foreground = true
 	}
 	manager := usecase.NewDeviceSessionManager(client, stStore, credentials, runtimeInstance).WithSignedConfigV2()
+	readyFile := strings.TrimSpace(os.Getenv(daemonReadyFileEnv))
+	var readyOnce sync.Once
+	signalDaemonReady := func(res usecase.SyncResult) {
+		if readyFile == "" {
+			return
+		}
+		readyOnce.Do(func() {
+			_ = writeDaemonReadyFile(readyFile, daemonReadyPayload{
+				Ready: true,
+				Sync:  &res,
+			})
+		})
+	}
 	if *watch {
 		if firstResult, err := manager.Sync(ctx); err != nil {
 			if fault.Code(err) == fault.CodeRuntimePermission {
@@ -987,8 +1038,19 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 			_, _ = fmt.Fprintf(stderr, "xconnect: initial sync warning: %v\n", err)
 		} else {
 			_ = writeJSON(stdout, firstResult)
+			signalDaemonReady(firstResult)
 		}
-		return runSupervisedSyncLoop(ctx, client, stStore, runtimeInstance, manager.Sync, *interval, *foreground, stdout, stderr)
+		loopSync := manager.Sync
+		if readyFile != "" {
+			loopSync = func(syncCtx context.Context) (usecase.SyncResult, error) {
+				res, syncErr := manager.Sync(syncCtx)
+				if syncErr == nil {
+					signalDaemonReady(res)
+				}
+				return res, syncErr
+			}
+		}
+		return runSupervisedSyncLoop(ctx, client, stStore, runtimeInstance, loopSync, *interval, *foreground, stdout, stderr)
 	}
 	result, err := manager.Sync(ctx)
 	if err != nil {
