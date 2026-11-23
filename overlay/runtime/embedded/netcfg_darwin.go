@@ -55,6 +55,9 @@ func (c *darwinNetConfigurator) Configure(ctx context.Context, ifaceName string,
 
 	installed := make([]netip.Prefix, 0, len(allowedIPs))
 	for _, prefix := range allowedIPs {
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("refusing default-route macOS prefix %s on %s", prefix.String(), ifaceName)
+		}
 		familyFlag := "-inet"
 		if prefix.Addr().Is6() {
 			familyFlag = "-inet6"

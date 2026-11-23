@@ -17,6 +17,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
+	overlayruntime "github.com/ai-workspace-xstream/XConnect-One/overlay/runtime"
 )
 
 type wgHost struct {
@@ -193,16 +194,29 @@ func buildUAPISetConfig(privKeyB64 string, cfg model.Config) (string, string, in
 	fmt.Fprintf(&b, "public_key=%s\n", peerPubHex)
 	fmt.Fprintf(&b, "endpoint=127.0.0.1:%d\n", localPort)
 	fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", keepalive)
+	hasAllowed := false
 	for _, rawAllowed := range cfg.WireGuard.PeerAllowedIPs {
 		cidr := strings.TrimSpace(rawAllowed)
 		if cidr == "" {
 			continue
 		}
-		prefix, parseErr := netip.ParsePrefix(cidr)
-		if parseErr != nil {
+		hasAllowed = true
+		if _, parseErr := netip.ParsePrefix(cidr); parseErr != nil {
 			return "", "", 0, fmt.Errorf("invalid allowed IP %q: %w", cidr, parseErr)
 		}
-		fmt.Fprintf(&b, "allowed_ip=%s\n", prefix.Masked().String())
+	}
+	if hasAllowed {
+		sanitizedAllowed, _, sanitizeErr := overlayruntime.SanitizeWireGuardAllowedIPs(cfg)
+		if sanitizeErr != nil {
+			return "", "", 0, sanitizeErr
+		}
+		for _, cidr := range sanitizedAllowed {
+			prefix, parseErr := netip.ParsePrefix(cidr)
+			if parseErr != nil {
+				return "", "", 0, fmt.Errorf("invalid allowed IP %q: %w", cidr, parseErr)
+			}
+			fmt.Fprintf(&b, "allowed_ip=%s\n", prefix.Masked().String())
+		}
 	}
 	if cfg.Mesh != nil {
 		for _, p := range cfg.Mesh.Peers {
@@ -223,6 +237,9 @@ func buildUAPISetConfig(privKeyB64 string, cfg model.Config) (string, string, in
 				prefix, parseErr := netip.ParsePrefix(addr)
 				if parseErr != nil {
 					return "", "", 0, fmt.Errorf("invalid mesh peer address %q: %w", addr, parseErr)
+				}
+				if prefix.Bits() == 0 {
+					return "", "", 0, fmt.Errorf("refusing default-route mesh peer address %q", addr)
 				}
 				fmt.Fprintf(&b, "allowed_ip=%s\n", prefix.Masked().String())
 			}

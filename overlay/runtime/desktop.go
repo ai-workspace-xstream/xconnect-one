@@ -80,7 +80,11 @@ type Desktop struct {
 }
 
 func NewLinuxDesktop(stateDirectory string) *Desktop {
-	return newDesktop(stateDirectory, newOSDesktopBackend())
+	desktop := newDesktop(stateDirectory, newOSDesktopBackend())
+	if setter, ok := desktop.backend.(interface{ SetLogDirectory(string) }); ok {
+		setter.SetLogDirectory(filepath.Join(desktop.dir, "logs"))
+	}
+	return desktop
 }
 
 // NewMacOSDesktop runs the same controlled-client lifecycle through the
@@ -524,7 +528,15 @@ func (r *Desktop) prepare(request ApplyRequest, xrayPath string) (desktopManifes
 	if err != nil {
 		return desktopManifest{}, fault.New(fault.CodeInvalidConfig, "render Xray config", nil)
 	}
-	wgConfig := renderWireGuardConfig(request.Config, request.WireGuardPrivateKey)
+	wgConfigModel := request.Config
+	allowedIPs, defaultRouteRejected, err := SanitizeWireGuardAllowedIPs(request.Config)
+	if err != nil {
+		return desktopManifest{}, err
+	}
+	if defaultRouteRejected {
+		wgConfigModel.WireGuard.PeerAllowedIPs = allowedIPs
+	}
+	wgConfig := renderWireGuardConfig(wgConfigModel, request.WireGuardPrivateKey)
 	xrayConfigPath := filepath.Join(revisionDirectory, "xray.json")
 	wgConfigPath := filepath.Join(revisionDirectory, request.Config.WireGuard.Interface+".conf")
 	if err := writeFile0600(xrayConfigPath, xrayConfig); err != nil {
@@ -610,7 +622,7 @@ func (r *Desktop) startManifestWithPrivateKey(ctx context.Context, manifest desk
 	}
 	identity, err := r.backend.Start(dependencies.xray, []string{"run", "-config", manifest.XrayConfigPath}, manifest.Revision, manifest.Xray.ConfigSHA256)
 	if err != nil {
-		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "start Xray runtime", nil)
+		return desktopManifest{}, fault.New(fault.CodeRuntimeApplyFailed, "start Xray runtime", err)
 	}
 	manifest.Xray = identity
 	manifest.Xray.ConfigPath = manifest.XrayConfigPath

@@ -9,6 +9,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
+	overlayruntime "github.com/ai-workspace-xstream/XConnect-One/overlay/runtime"
 )
 
 // NetConfigurator abstracts platform-specific TUN interface creation,
@@ -24,26 +25,34 @@ func parseNetworkPrefixes(cfg model.Config) (netip.Prefix, []netip.Prefix, error
 	if err != nil || !localPrefix.IsValid() {
 		return netip.Prefix{}, nil, fmt.Errorf("invalid WireGuard address %q: %w", cfg.WireGuard.Address, err)
 	}
-	allowed := make([]netip.Prefix, 0, len(cfg.WireGuard.PeerAllowedIPs))
-	seen := make(map[netip.Prefix]struct{}, len(cfg.WireGuard.PeerAllowedIPs))
+	hasAllowed := false
 	for _, raw := range cfg.WireGuard.PeerAllowedIPs {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
 			continue
 		}
-		p, parseErr := netip.ParsePrefix(trimmed)
-		if parseErr != nil {
+		hasAllowed = true
+		if _, parseErr := netip.ParsePrefix(trimmed); parseErr != nil {
 			return netip.Prefix{}, nil, fmt.Errorf("invalid allowed IP %q: %w", trimmed, parseErr)
 		}
-		masked := p.Masked()
-		if _, dup := seen[masked]; dup {
-			continue
-		}
-		seen[masked] = struct{}{}
-		allowed = append(allowed, masked)
 	}
-	if len(allowed) == 0 && localPrefix.Addr().Is4() {
-		allowed = append(allowed, localPrefix.Masked())
+	if !hasAllowed {
+		if localPrefix.Addr().Is4() && localPrefix.Bits() > 0 {
+			return localPrefix, []netip.Prefix{localPrefix.Masked()}, nil
+		}
+		return localPrefix, nil, nil
+	}
+	sanitized, _, err := overlayruntime.SanitizeWireGuardAllowedIPs(cfg)
+	if err != nil {
+		return netip.Prefix{}, nil, err
+	}
+	allowed := make([]netip.Prefix, 0, len(sanitized))
+	for _, raw := range sanitized {
+		p, parseErr := netip.ParsePrefix(raw)
+		if parseErr != nil {
+			return netip.Prefix{}, nil, fmt.Errorf("invalid allowed IP %q: %w", raw, parseErr)
+		}
+		allowed = append(allowed, p.Masked())
 	}
 	return localPrefix, allowed, nil
 }

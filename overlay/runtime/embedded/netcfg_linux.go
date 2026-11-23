@@ -93,6 +93,9 @@ func (c *linuxNetConfigurator) Configure(_ context.Context, ifaceName string, lo
 
 	installed := make([]netip.Prefix, 0, len(allowedIPs))
 	for _, prefix := range allowedIPs {
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("refusing default-route Linux prefix %s on %s", prefix.String(), ifaceName)
+		}
 		dst := prefixToIPNet(prefix.Masked())
 		route := &netlink.Route{
 			LinkIndex: link.Attrs().Index,
