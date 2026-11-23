@@ -1,13 +1,79 @@
 # XConnect Zero Cloud TL;DR
 
-这份文档只说明自建节点的最短操作路径。Zero/Accounts 是唯一配置与策略来源；
+这份文档只说明自建节点与客户端的最短操作路径。Zero/Accounts 是唯一配置与策略来源；
 Gateway 与 One 是数据面运行时。短期邀请、设备凭据、WireGuard 私钥、TLS 私钥和
 Vault 值均不得写进 Git、终端历史或流水线参数。
 
-## 最短接入流程
+---
 
-用户只需要准备一个 Gateway，然后在 Zero Portal 生成一次性邀请，最后在受控
-设备上执行 One shell。Gateway 只支持 Linux Server；One 支持 Linux、macOS 和
+## 一、XConnect-One 客户端极速上手（`v0.1.22+`）
+
+`xconnect-one` 默认启用**单二进制内嵌运行时（`--runtime=embedded`）**，内置精简版 `xray-core` 与 `wireguard-go`，无需额外安装外部 `xray` 或 `wg-quick`。
+
+### 1.1 一键安装（Release 安装包 / 二进制）
+
+从 [GitHub Releases (`v0.1.22`)](https://github.com/ai-workspace-xstream/xconnect-one/releases/tag/v0.1.22) 下载对应平台产物，或使用安装脚本：
+
+```bash
+# Linux / macOS 一键安装脚本
+curl -fsSL https://install.svc.plus/xconnect-one | \
+  sudo env XCONNECT_ONE_VERSION=v0.1.22 bash
+```
+
+也支持原生包安装：
+- **macOS**：下载 `xconnect-one-macos-arm64.dmg`（或 `amd64.dmg`）
+- **Debian / Ubuntu**：`sudo dpkg -i xconnect-one_0.1.22_amd64.deb`（或 `arm64.deb`）
+- **RHEL / Fedora / Rocky**：`sudo rpm -Uvh xconnect-one-0.1.22.x86_64.rpm`（或 `aarch64.rpm`）
+- **Windows（管理员 PowerShell）**：下载 `xconnect-one-windows-amd64.zip`（内含 `xconnect-one.exe` 与 `wintun.dll`）或执行：
+  ```powershell
+  $env:XCONNECT_ONE_VERSION = 'v0.1.22'
+  irm https://install.svc.plus/xconnect-one.ps1 | iex
+  ```
+
+### 1.2 三步入网与后台守护启动（`login` → `join` → `up -D`）
+
+```bash
+# 1. 登录控制面（支持邮箱密码 + MFA TOTP，或 --web 浏览器 OAuth）
+xconnect-one login
+
+# 2. 绑定网关并完成设备注册（若账号尚未授权网关，会自动引导打开 Console 授权并等待完成）
+xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
+
+# 3. 后台守护模式启动隧道（默认日志位于 <state-dir>/runtime/xconnect-one.log）
+sudo xconnect-one up -D
+
+# 查看状态 / 停止守护进程
+sudo xconnect-one status
+sudo xconnect-one down
+```
+
+### 1.3 全局唯一 Device ID 与冲突自愈机制（`/etc/xconnect-one/device-id`）
+
+为彻底避免多台同名主机（如 `ubuntu`、`localhost`）或克隆虚拟机在 `join` 时触发控制面 **HTTP 409 Conflict**：
+
+1. **首次运行自动派生唯一 ID**：
+   - 客户端自动读取 **系统 Machine ID**（`/etc/machine-id`、`/var/lib/dbus/machine-id`、`/etc/hostid`） + **首个物理网卡 MAC 地址**（自动过滤虚拟网卡） + **本地 WireGuard 公钥**，计算 8 位 Hex 指纹。
+   - 生成格式：`xconnect-<os>-<short-hostname>-<8hex>`（例如 `xconnect-linux-ubuntu-8f3a1c9d`）。
+2. **全局持久化**：
+   - 生成后立即持久化写入 **`/etc/xconnect-one/device-id`**（非特权模式同步保存于 `<state-dir>/device-id`）。
+   - 后续 `login`、`join`、`up` 均复用该全局 ID，保证设备标识与分配的 Overlay 内网 IP 稳定不变。
+3. **重新生成全新 Device ID（注册为全新设备）**：
+   - `/etc/xconnect-one/device-id` 是全局权威标识，支持随时重新生成；**重新生成即代表在控制面注册全新的 `device_id` 并自动轮换本地 WireGuard 密钥对**：
+   ```bash
+   # 方式 A：通过参数一键重新生成并入网
+   sudo xconnect-one join --regenerate-device-id --gateway https://ph-xconnect-gateway-01.svc.plus
+
+   # 方式 B：删除全局 device-id 文件后重新 join
+   sudo rm -f /etc/xconnect-one/device-id
+   sudo xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
+   ```
+
+---
+
+## 二、自建 Gateway 与邀请码接入最短流程
+
+用户只需要准备一个 Gateway，然后在 Zero Portal 绑定或生成一次性邀请，最后在受控
+设备上执行 `xconnect-one`。Gateway 只支持 Linux Server；One 支持 Linux、macOS 和
 Windows。
 
 ### 第 1 步：准备 Gateway 域名解析
@@ -53,26 +119,25 @@ sudo /tmp/xconnect-one.sh gateway-init \
 `gateway-init` 只生成 Gateway 本机身份和受保护的 `state.json`，不会打印或
 上传私钥，也不会替代后续 Zero Gateway 邀请、`join` 和 `up`。
 
-### 第 3 步：Zero Portal 签发 One 邀请
+### 第 3 步：Zero Portal 授权账号或签发 One 邀请
 
-打开当前 UAT 控制面：
+打开控制面（生产环境 `https://console.svc.plus/panel/xconnect-zero` 或 UAT [XConnect Zero Portal](https://console-serverless-uat.onwalk.net/panel/xconnect-zero)）：
 
-[XConnect Zero Portal](https://console-serverless-uat.onwalk.net/panel/xconnect-zero)
-
-选择：
-
-1. 角色：`One`
-2. 网络：目标 UAT/PROD 网络
-3. 设备平台：`Linux`、`macOS` 或 `Windows`
-4. 设备 ID：使用默认主机名或自定义稳定 ID
-5. 有效期：建议 `15` 分钟
+- **方式 A（推荐：账号登录直接入网）**：
+  在控制台将网关网络授权给当前账号，随后在终端直接运行 `xconnect-one login` 与 `xconnect-one join`。
+- **方式 B（无账号自动化 / 一次性邀请码入网）**：
+  1. 角色：`One`
+  2. 网络：目标 UAT/PROD 网络
+  3. 设备平台：`Linux`、`macOS` 或 `Windows`
+  4. 设备 ID：留空（由客户端使用 `/etc/xconnect-one/device-id` 唯一 ID）或指定自定义稳定 ID
+  5. 有效期：建议 `15` 分钟
 
 点击“签发设备邀请”，然后使用页面提供的 **Copy/Run** 命令。邀请是一次性
 敏感信息，不要粘贴到 Git、工单、聊天记录或公共日志。
 
-### 第 4 步：One 一键加入 Gateway
+### 第 4 步：One 使用邀请码一键加入 Gateway
 
-在 macOS/Linux 上，One shell 会自动识别主机名，并完成：
+在 macOS/Linux 上，One shell 会自动读取或生成全局唯一 `device-id`，并完成：
 
 ```text
 join → signed config → sync → Xray/WireGuard → ACK → status/diagnose
@@ -140,7 +205,9 @@ PASS: XConnect One verification completed.
 如果当前 handoff 没有 run-scoped 私网 HTTP 探针，脚本不会伪造 ping/HTTP 成功；
 私网 ping/HTTP 应使用对应 UAT Cloud Lab 的验收结果。
 
-## 一键安装入口与安全边界
+---
+
+## 三、安装器与外部运行时（`--runtime=external`）说明
 
 以下安装入口只下载、校验并安装 CLI 二进制：
 
@@ -151,23 +218,22 @@ curl -fsSL https://install.svc.plus/xconnect-gateway | \
 
 # One（Linux）
 curl -fsSL https://install.svc.plus/xconnect-one | \
-  sudo env XCONNECT_ONE_VERSION=v0.1.13 bash
+  sudo env XCONNECT_ONE_VERSION=v0.1.22 bash
 
-# One（macOS；也可使用 Homebrew）
+# One（macOS；也可使用 DMG 或 Homebrew）
 curl -fsSL https://install.svc.plus/xconnect-one | \
-  sudo env XCONNECT_ONE_VERSION=v0.1.13 bash
+  sudo env XCONNECT_ONE_VERSION=v0.1.22 bash
 ```
 
 Windows 使用管理员 PowerShell：
 
 ```powershell
-$env:XCONNECT_ONE_VERSION = 'v0.1.13'
+$env:XCONNECT_ONE_VERSION = 'v0.1.22'
 irm https://install.svc.plus/xconnect-one.ps1 | iex
 ```
 
-安装器只负责安装经过校验的 CLI，不会执行 `init`、`join`、`sync`、`up` 或 `down`，也不会安装或启动
-Xray、WireGuard、`wireguard-go`。这些运行时必须由节点管理员从受信任来源
-单独安装。
+- `xconnect-one` 默认使用内置 `--runtime=embedded`，开箱即用。
+- 若需回退至系统外部 `xray` 与 `wireguard-go`/`wg` 二进制（`--runtime=external`），可通过 `--bootstrap` 准备受管外部运行时。
 
 ### Gateway 一键安装后初始化
 
@@ -185,134 +251,7 @@ sudo xconnect-gateway init \
 随后由 Zero Portal 为该公钥签发一次性邀请，再执行 `join` 和 `up`。不要把邀请
 放入 GitHub Actions input、公开 URL、shell history 或日志。
 
-### One 一键安装后接入
-
-Linux、macOS 和 Windows 使用同一生命周期：先安装 CLI 与外部运行时，再用
-Zero 签发的一次性邀请显式 `join`。Linux/macOS 示例：
-
-```sh
-sudo xconnect diagnose --state-dir /var/lib/xconnect-one
-sudo xconnect join --bootstrap \
-  --state-dir /var/lib/xconnect-one \
-  'xconnect://join/SHORT_LIVED_INVITE'
-sudo xconnect sync --state-dir /var/lib/xconnect-one
-sudo xconnect status --state-dir /var/lib/xconnect-one
-```
-
-Windows 管理员 PowerShell：
-
-```powershell
-& "$env:ProgramFiles\XConnect\xconnect-windows-amd64.exe" diagnose `
-  --state-dir "$env:ProgramData\XConnect-One"
-& "$env:ProgramFiles\XConnect\xconnect-windows-amd64.exe" join --bootstrap `
-  --state-dir "$env:ProgramData\XConnect-One" `
-  'xconnect://join/SHORT_LIVED_INVITE'
-```
-
-`--bootstrap` 只准备节点管理员明确允许的外部 Xray/WireGuard runtime；它不会
-绕过签名验证、网络绑定、邀请有效期或 ACK。macOS standalone One 不实现
-host adapter / Packet Tunnel handoff。
-
-## macOS One
-
-Homebrew 公式合并发布后，也可安装 One CLI：
-
-```sh
-brew install --formula \
-  https://raw.githubusercontent.com/ai-workspace-xstream/XConnect-One/main/Formula/xconnect-one.rb
-
-brew install xray wireguard-tools wireguard-go
-```
-
-安装后先确认外部运行时可见：
-
-```sh
-XCONNECT_BIN="${XCONNECT_BIN:-$(brew --prefix)/bin/xconnect}"
-sudo "$XCONNECT_BIN" diagnose --state-dir /var/lib/xconnect-one
-```
-
-首次加入推荐使用受控脚本；它会在受保护终端中交互读取短期邀请：
-
-```sh
-XCONNECT_BIN="$XCONNECT_BIN" \
-XCONNECT_STATE_DIR=/var/lib/xconnect-one \
-bash /path/to/xconnect-one-macos-join.sh /path/to/handoff.json
-```
-
-首次 `join` 的职责：
-
-```text
-生成本机 WireGuard 密钥和受保护状态
-→ 完成 Zero enrollment
-→ 获取并验证签名配置
-→ 生成外部 Xray transport 与 WireGuard 配置
-→ 启动 Xray、WireGuard/wireguard-go
-→ 读取状态并向 Accounts 发送 ACK
-```
-
-后续更新与检查：
-
-```sh
-sudo "$XCONNECT_BIN" sync --state-dir /var/lib/xconnect-one
-sudo "$XCONNECT_BIN" status --state-dir /var/lib/xconnect-one
-sudo wg show xconone0 latest-handshakes
-```
-
-停止 One 自己拥有的运行时：
-
-```sh
-sudo "$XCONNECT_BIN" down --state-dir /var/lib/xconnect-one
-```
-
-当前 CLI 不支持以离线缓存配置重新 `up`；停止后应使用 `sync` 重新验证签名
-配置并启动。
-
-### Linux / macOS / Windows 快速接入
-
-统一 shell 入口：
-
-```sh
-# Gateway：只初始化本机身份和 state.json
-scripts/one.sh gateway-init \
-  --controller https://accounts-uat.onwalk.net \
-  --gateway-id gw-uat-tw-xconnect \
-  --state-dir /var/lib/xconnect-gateway
-
-# One：自动主机名 + 一次性邀请 stdin，自动 join/sync/status/diagnose
-pbpaste | scripts/one.sh join \
-  --gateway-id gw-uat-tw-xconnect \
-  --handoff /path/to/xconnect-desktop-handoff-uat.json \
-  --state-dir /var/lib/xconnect-one \
-  --invite-stdin
-```
-
-Windows 使用 `scripts/one.ps1` 和管理员 PowerShell；它保持相同的 One
-生命周期，但不提供 Gateway 初始化，因为 Gateway 当前只支持 Linux Server。
-
-`gateway-init` 与 `join` 只是薄封装：Gateway/One 的签名配置、运行时启动、
-WireGuard/Xray 和 ACK 仍由对应原生 CLI 完成。不要把 Vault token、私钥或邀请
-URI 固化到 shell 文件。
-
-One 可以显式完成受管运行时准备并加入 Gateway，无需手工编写
-Xray/WireGuard 配置：
-
-```sh
-sudo /usr/local/bin/xconnect join --bootstrap \
-  --state-dir /var/lib/xconnect-one \
-  'xconnect://join/SHORT_LIVED_INVITE'
-```
-
-该路径固定并校验 Xray 归档，使用平台受支持的包管理器安装缺失的 WireGuard
-工具，并只管理 One 自己状态目录下的运行时。Windows 在管理员 PowerShell 中
-使用同样的 `join --bootstrap`；macOS 使用 `sudo` 执行。
-
-```powershell
-& "$env:ProgramFiles\XConnect\xconnect-windows-amd64.exe" join --bootstrap `
-  --state-dir "$env:ProgramData\XConnect-One" `
-  'xconnect://join/SHORT_LIVED_INVITE'
-```
-
-## Gateway
+### Gateway 启动
 
 先由 Vault 以受保护方式注入：
 
@@ -344,7 +283,9 @@ sudo /usr/local/bin/xconnect-gateway up \
 
 Gateway 的 `up` 会同步并验证签名配置，启动外部 Xray/WireGuard，并发送 ACK。
 
-## 验证闭环
+---
+
+## 四、验证闭环
 
 ```text
 One WireGuard
@@ -360,8 +301,7 @@ One WireGuard
 
 ```sh
 # One
-sudo "$XCONNECT_BIN" status --state-dir /var/lib/xconnect-one
-sudo wg show xconone0 latest-handshakes
+sudo xconnect-one status
 ping -c 3 10.77.0.1
 curl --fail --max-time 10 http://10.77.0.1:8080/uat/run
 

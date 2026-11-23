@@ -131,11 +131,19 @@ ping -c 3 10.66.0.1
 - `--state-dir`：状态目录（默认 `~/.xconnect-one`；若目录被 `root` 占用或无写权限，默认安全回退到 `~/.xconnect-one-user`，显式传参时校验权限并给出具体修复提示）
 
 ### `up` 参数
+- `-D` / `--daemon`：后台守护模式启动隧道（默认日志写入 `<state-dir>/runtime/xconnect-one.log`）
+- `--log-file`：后台守护模式自定义日志文件路径
 - `--gateway`：指定或切换目标网关（支持 Gateway ID、域名或 URL 如 `https://ph-xconnect-gateway-01.svc.plus`）
 - `--bootstrap`：启动前自动检查/安装受管 Xray 运行时
 - `--watch` / `--interval`：持续运行并按周期向控制面同步配置（默认 `1m`）
-- `--device-id` / `--name`：自定义设备 ID 与显示名称
+- `--device-id` / `--name`：自定义设备 ID 与显示名称（未显式指定时默认读取或首次生成 `xconnect-<os>-<hostname>-<8hex>` 并全局持久化至 `/etc/xconnect-one/device-id`）
 - `--state-dir`：状态目录（默认 `~/.xconnect-one`，无权限时自动回退到用户级目录）
+
+### `join` 参数
+- `--gateway`：绑定目标网关（支持 Gateway ID、域名或 URL）
+- `--device-id`：显式指定设备 ID 并更新 `/etc/xconnect-one/device-id`
+- `--regenerate-device-id`：重新生成全新的全局 `device_id`（写入 `/etc/xconnect-one/device-id`）并自动轮换本地 WireGuard 密钥对，在控制面作为全新设备注册
+- `--state-dir`：状态目录
 
 ### `down` 参数
 - `--logout`：断开隧道后同时清除本地登录会话

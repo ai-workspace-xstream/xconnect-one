@@ -103,7 +103,7 @@ docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
 | Command | Description |
 | :--- | :--- |
 | `xconnect-one login` | Authenticate with `accounts.svc.plus` |
-| `xconnect-one join [--gateway <url>]` | Enroll device and fetch signed config |
+| `xconnect-one join [--gateway <url>] [--regenerate-device-id]` | Enroll device (persisting unique `xconnect-<os>-<host>-<8hex>` ID to `/etc/xconnect-one/device-id`) and fetch signed config |
 | `xconnect-one up [-D\|--daemon] [--log-file <path>] [--runtime=embedded\|external]` | Start overlay tunnel and supervision loop (foreground by default, or background daemon with `-D` / `--daemon`; default log `<state-dir>/runtime/xconnect-one.log`) |
 | `xconnect-one down` | Stop tunnel/background daemon and clean up interface/routes |
 | `xconnect-one status` / `diagnose` | Inspect tunnel status and runtime health |
@@ -114,6 +114,7 @@ docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
 
 | Document | Topic |
 | :--- | :--- |
+| [docs/xconnect-zero-cloud-tldr.md](docs/xconnect-zero-cloud-tldr.md) | Quick TL;DR operational guide (client onboarding, global `/etc/xconnect-one/device-id`, gateway setup) |
 | [docs/cross-platform-install-and-deployment.md](docs/cross-platform-install-and-deployment.md) | Full installation & deployment guide (macOS, Linux, Docker, Windows, Gateway) |
 | [docs/cli-user-guide.zh-CN.md](docs/cli-user-guide.zh-CN.md) | Chinese CLI user guide |
 | [docs/macos-runtime-setup.md](docs/macos-runtime-setup.md) | macOS LaunchDaemon autostart & recovery |
