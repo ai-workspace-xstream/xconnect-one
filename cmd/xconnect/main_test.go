@@ -31,10 +31,11 @@ import (
 const cliTestToken = "cli-secret-token"
 
 func TestRegisterCLIRequiresHTTPSControllerAndPublicNetwork(t *testing.T) {
+	stateDir := t.TempDir()
 	for _, args := range [][]string{
-		{"register"},
-		{"register", "--controller", "http://localhost:8080", "--network", "net_public"},
-		{"register", "--controller", "https://accounts.example"},
+		{"register", "--state-dir", stateDir},
+		{"register", "--state-dir", stateDir, "--controller", "http://localhost:8080", "--network", "net_public"},
+		{"register", "--state-dir", stateDir, "--controller", "https://accounts.example"},
 	} {
 		var stdout, stderr bytes.Buffer
 		err := runWithRuntimeFactory(t.Context(), args, &stdout, &stderr, http.DefaultClient, func(string) overlayruntime.Interface { return &overlayruntime.Fake{} })

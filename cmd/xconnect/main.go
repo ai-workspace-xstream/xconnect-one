@@ -32,8 +32,8 @@ const (
 	// defaultConsoleBindingURL is where a logged-in user binds/authorizes a
 	// gateway network (e.g. net-ph-xconnect) to their account.
 	defaultConsoleBindingURL = "https://console.svc.plus/panel/xconnect-zero"
-	defaultVersion           = "v0.1.21"
-	defaultBuildNumber       = "27"
+	defaultVersion           = "v0.1.22"
+	defaultBuildNumber       = "28"
 )
 
 type exitStatusError int
@@ -256,7 +256,8 @@ func runRegister(ctx context.Context, args []string, stdout, stderr io.Writer, h
 	controller := flags.String("controller", "", "HTTPS accounts controller base URL")
 	networkID := flags.String("network", "", "public overlay network ID")
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
-	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID")
+	deviceID := flags.String("device-id", "", "stable local device ID")
+	regenerateDeviceID := flags.Bool("regenerate-device-id", false, "regenerate a brand-new global device ID and persist it to /etc/xconnect-one/device-id")
 	deviceName := flags.String("name", "", "device display name")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "parse register arguments", err)
@@ -267,6 +268,20 @@ func runRegister(ctx context.Context, args []string, stdout, stderr io.Writer, h
 	client, err := controlplane.New(*controller, "", httpClient)
 	if err != nil {
 		return err
+	}
+	explicitFlags := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
+	*stateDirectory = expandUserPath(*stateDirectory)
+	if *regenerateDeviceID {
+		newID, regenErr := RegenerateDeviceID(*stateDirectory)
+		if regenErr != nil {
+			return regenErr
+		}
+		*deviceID = newID
+	} else {
+		*deviceID = resolveOrCreateDeviceID(*stateDirectory, *deviceID, explicitFlags["device-id"])
 	}
 	hostname, _ := os.Hostname()
 	store := state.NewStore(*stateDirectory)
@@ -289,7 +304,8 @@ func runJoin(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 	server := flags.String("server", defaultAccountsServer, "accounts service base URL")
 	gatewayTarget := flags.String("gateway", "", "preferred gateway ID, endpoint host, or URL (e.g. "+defaultKnownGateway+")")
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
-	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID")
+	deviceID := flags.String("device-id", "", "stable local device ID")
+	regenerateDeviceID := flags.Bool("regenerate-device-id", false, "regenerate a brand-new global device ID and persist it to /etc/xconnect-one/device-id")
 	deviceName := flags.String("name", "", "device display name")
 	networkID := flags.String("network-id", "", "requested overlay network ID")
 	nodeID := flags.String("node-id", "", "preferred gateway node ID")
@@ -327,7 +343,20 @@ func runJoin(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 		}
 	}
 
+	explicitFlags := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
 	*stateDirectory = expandUserPath(*stateDirectory)
+	if *regenerateDeviceID {
+		newID, regenErr := RegenerateDeviceID(*stateDirectory)
+		if regenErr != nil {
+			return regenErr
+		}
+		*deviceID = newID
+	} else {
+		*deviceID = resolveOrCreateDeviceID(*stateDirectory, *deviceID, explicitFlags["device-id"])
+	}
 	if targetValue == "" && strings.TrimSpace(*tokenFile) == "" {
 		session, sessErr := credential.LoadUserSession(*stateDirectory)
 		if sessErr != nil && !errors.Is(sessErr, credential.ErrNotFound) {
@@ -980,20 +1009,6 @@ func expandUserPath(raw string) string {
 		}
 	}
 	return trimmed
-}
-
-func defaultDeviceID() string {
-	hostname, _ := os.Hostname()
-	raw := strings.ToLower("xconnect-" + runtime.GOOS + "-" + hostname)
-	var normalized strings.Builder
-	for _, character := range raw {
-		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.' {
-			normalized.WriteRune(character)
-		} else {
-			normalized.WriteByte('-')
-		}
-	}
-	return strings.Trim(normalized.String(), "-.")
 }
 
 func writeJSON(writer io.Writer, value any) error {

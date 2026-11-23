@@ -128,7 +128,7 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 	status := flags.Bool("status", false, "display current login session status")
 	asJSON := flags.Bool("json", false, "output login status or response as JSON")
 	gatewayTarget := flags.String("gateway", "", "optional gateway ID, endpoint host, or URL (e.g. "+defaultKnownGateway+")")
-	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID (used with --gateway)")
+	deviceID := flags.String("device-id", "", "stable local device ID (used with --gateway)")
 	deviceName := flags.String("name", "", "device display name (used with --gateway)")
 	stateDirectory := flags.String("state-dir", defaultStateDir, "local XConnect-One state directory")
 	if err := flags.Parse(args); err != nil {
@@ -147,6 +147,7 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 	})
 
 	*stateDirectory = expandUserPath(*stateDirectory)
+	*deviceID = resolveOrCreateDeviceID(*stateDirectory, *deviceID, explicitFlags["device-id"])
 
 	if *status {
 		sess, err := credential.LoadUserSession(*stateDirectory)
@@ -591,7 +592,7 @@ func runGatewaySelect(ctx context.Context, args []string, stdout, stderr io.Writ
 	flags := flag.NewFlagSet("xconnect gateway select", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
-	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID")
+	deviceID := flags.String("device-id", "", "stable local device ID")
 	deviceName := flags.String("name", "", "device display name")
 	up := flags.Bool("up", false, "bring up tunnel interface after enrolling")
 	if err := flags.Parse(args); err != nil {
@@ -603,7 +604,12 @@ func runGatewaySelect(ctx context.Context, args []string, stdout, stderr io.Writ
 	if flags.NArg() != 1 {
 		return fault.New(fault.CodeInvalidInput, "gateway select requires exactly one <gateway-id>", nil)
 	}
+	explicitFlags := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
 	*stateDirectory = expandUserPath(*stateDirectory)
+	*deviceID = resolveOrCreateDeviceID(*stateDirectory, *deviceID, explicitFlags["device-id"])
 	selectedGateway := flags.Arg(0)
 	session, err := credential.LoadUserSession(*stateDirectory)
 	if err != nil {
@@ -763,7 +769,7 @@ func enrollResolvedGateway(
 		AppliedAt:  time.Now().UTC(),
 	})
 
-	_ = stStore.SaveLastKnown(state.LastKnown{
+	if err := stStore.SaveLastKnown(state.LastKnown{
 		Server:              session.Server,
 		DeviceID:            deviceID,
 		NetworkID:           targetGateway.NetworkID,
@@ -774,7 +780,10 @@ func enrollResolvedGateway(
 		SignedConfigID:      signedCfg.ConfigID,
 		SignedGeneration:    signedCfg.Generation,
 		Config:              compiledModel,
-	})
+	}); err == nil {
+		_ = trySaveSystemDeviceID(deviceID)
+		_ = savePersistedDeviceIDToStateDir(stateDirectory, deviceID)
+	}
 
 	return enrolledGatewayResult{
 		Gateway:    *targetGateway,
@@ -874,7 +883,7 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 	flags.SetOutput(stderr)
 	stateDirectory := flags.String("state-dir", defaultStateDir, "local XConnect-One state directory")
 	gatewayTarget := flags.String("gateway", "", "gateway ID, endpoint host, or URL to connect to (e.g. "+defaultKnownGateway+")")
-	deviceID := flags.String("device-id", defaultDeviceID(), "stable local device ID")
+	deviceID := flags.String("device-id", "", "stable local device ID")
 	deviceName := flags.String("name", "", "device display name")
 	bootstrapRuntime := flags.Bool("bootstrap", false, "install or repair the approved managed runtime before starting")
 	runtimeReleaseBaseURL := flags.String("runtime-release-base-url", os.Getenv("XCONNECT_RUNTIME_RELEASE_BASE_URL"), "approved Xray release mirror base URL")
@@ -911,6 +920,7 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 		explicitFlags[f.Name] = true
 	})
 	*stateDirectory = expandUserPath(*stateDirectory)
+	*deviceID = resolveOrCreateDeviceID(*stateDirectory, *deviceID, explicitFlags["device-id"])
 	if !explicitFlags["state-dir"] && fallbackReason != "" {
 		fmt.Fprintf(stderr, "Note: default state directory %q is %s; using %q (or pass --state-dir)\n", primaryStateDir, fallbackReason, *stateDirectory)
 	}
@@ -1070,13 +1080,6 @@ func isTerminal(file *os.File) bool {
 		return false
 	}
 	return isTerminalFD(int(file.Fd()))
-}
-
-func ensureWireGuardKeyPair(stStore *state.Store) (string, string, error) {
-	if lk, err := stStore.LoadLastKnown(); err == nil && lk.WireGuardPrivateKey != "" && lk.WireGuardPublicKey != "" {
-		return lk.WireGuardPrivateKey, lk.WireGuardPublicKey, nil
-	}
-	return usecase.GenerateWireGuardKeyPair()
 }
 
 func readLine(r io.Reader) (string, error) {
