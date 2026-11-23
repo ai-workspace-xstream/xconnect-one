@@ -1,0 +1,194 @@
+name: Build and Release Packages
+
+on:
+  push:
+    branches:
+      - main
+      - "release/v*"
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional GitHub Release tag (creates/updates release when set)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check formatting
+        shell: bash
+        run: test -z "$(gofmt -l cmd overlay)"
+      - run: go vet ./...
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          bash -n scripts/setup-xconnect-one-macos.sh scripts/install-xconnect-one.sh \
+            scripts/ci/package_macos_dmg.sh scripts/ci/package_windows_bundle.sh \
+            scripts/ci/package_linux.sh packaging/nfpm/postinstall.sh
+      - run: go test -race -count=1 ./...
+      - name: Test macOS desktop verifier offline
+        if: runner.os == 'macOS'
+        run: bash scripts/test-desktop-verification.sh
+      - name: Test Windows desktop verifier parsers offline
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-desktop-verification.ps1
+
+  prepare-metadata:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      pkg_version: ${{ steps.meta.outputs.pkg_version }}
+      pkg_release: ${{ steps.meta.outputs.pkg_release }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute package and release metadata
+        id: meta
+        shell: bash
+        run: |
+          latest_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo 'v0.1.0')"
+          base_ver="${latest_tag#v}"
+          base_ver="${base_ver%%-*}"
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" || "${GITHUB_REF_NAME:-}" == v* ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+            pkg_version="${release_tag#v}"
+            pkg_version="${pkg_version%%-*}"
+            pkg_release="1"
+          elif [[ -n "${{ inputs.release_tag }}" ]]; then
+            release_tag="${{ inputs.release_tag }}"
+            pkg_version="${release_tag#v}"
+            pkg_version="${pkg_version%%-*}"
+            pkg_release="1"
+          else
+            release_tag=""
+            pkg_version="$base_ver"
+            pkg_release="0.git.${GITHUB_RUN_NUMBER:-0}.${short_sha}"
+          fi
+          {
+            echo "pkg_version=${pkg_version}"
+            echo "pkg_release=${pkg_release}"
+            echo "release_tag=${release_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    needs: [test, prepare-metadata]
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build macOS DMG and standalone binary (${{ matrix.arch }})
+        run: bash ./scripts/ci/package_macos_dmg.sh "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xconnect-release-macos-${{ matrix.arch }}
+          path: |
+            dist/xconnect-one-macos-${{ matrix.arch }}.dmg
+            dist/xconnect-macos-${{ matrix.arch }}
+
+  build-windows:
+    needs: [test, prepare-metadata]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build Windows zero-dependency binary and portable zip
+        run: bash ./scripts/ci/package_windows_bundle.sh amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xconnect-release-windows-amd64
+          path: |
+            dist/xconnect-windows-amd64.exe
+            dist/xconnect-one-windows-amd64.exe
+            dist/xconnect-one-windows-amd64.zip
+
+  build-linux:
+    needs: [test, prepare-metadata]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build Linux static binaries, portable archives, and deb/rpm (${{ matrix.arch }})
+        run: >-
+          bash ./scripts/ci/package_linux.sh
+          "${{ matrix.arch }}"
+          "${{ needs.prepare-metadata.outputs.pkg_version }}"
+          "${{ needs.prepare-metadata.outputs.pkg_release }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xconnect-release-linux-${{ matrix.arch }}
+          path: |
+            dist/xconnect-linux-${{ matrix.arch }}
+            dist/xconnect-one-linux-${{ matrix.arch }}
+            dist/xconnect-zero-lab-linux-${{ matrix.arch }}
+            dist/xconnect-one-linux-${{ matrix.arch }}.tar.gz
+            dist/xconnect-one-linux-${{ matrix.arch }}.zip
+            dist/*.deb
+            dist/*.rpm
+
+  release:
+    if: >-
+      github.event_name != 'pull_request' &&
+      (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '')
+    needs: [prepare-metadata, build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xconnect-release-*
+          path: dist
+          merge-multiple: true
+      - name: Generate release checksums
+        run: (cd dist && sha256sum * > SHA256SUMS)
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-metadata.outputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* --title "XConnect-One ${RELEASE_TAG}" --generate-notes
+          fi
