@@ -223,7 +223,7 @@ func (s *Store) ClearOwnedState() (CleanupResult, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err == nil {
 		for _, entry := range entries {
-			if entry.Name() != ".operation-lock" {
+			if entry.Name() != ".operation-lock" && entry.Name() != "device-id" && entry.Name() != "wireguard-keypair.json" {
 				result.Retained = true
 				break
 			}
