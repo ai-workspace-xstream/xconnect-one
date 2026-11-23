@@ -85,9 +85,21 @@ func formatFaultError(err error) string {
 		cur = errors.Unwrap(fe)
 	}
 	if len(ops) == 0 {
-		return faultErr.Error()
+		return appendSafeHint(faultErr.Error(), err)
 	}
-	return strings.Join(ops, " -> ") + ": " + faultErr.Code()
+	return appendSafeHint(strings.Join(ops, " -> ")+": "+faultErr.Code(), err)
+}
+
+func appendSafeHint(message string, err error) string {
+	var hinted interface{ SafeHint() string }
+	if !errors.As(err, &hinted) {
+		return message
+	}
+	hint := strings.TrimSpace(hinted.SafeHint())
+	if hint == "" || strings.Contains(message, hint) {
+		return message
+	}
+	return message + ": " + hint
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client) error {

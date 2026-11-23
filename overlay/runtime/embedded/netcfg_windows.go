@@ -62,6 +62,9 @@ func (c *windowsNetConfigurator) Configure(ctx context.Context, ifaceName string
 
 	installed := make([]netip.Prefix, 0, len(allowedIPs))
 	for _, prefix := range allowedIPs {
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("refusing default-route Windows prefix %s on %s", prefix.String(), ifaceName)
+		}
 		family := "ipv4"
 		if prefix.Addr().Is6() {
 			family = "ipv6"

@@ -1062,6 +1062,15 @@ func TestFormatFaultErrorPreservesOperationChain(t *testing.T) {
 	if strings.Contains(got, "permission") {
 		t.Fatalf("must not leak raw non-fault cause error: %q", got)
 	}
+
+	hinted := fault.New(fault.CodeRuntimeApplyFailed, "start Xray runtime", &overlayruntime.HintedError{Hint: "systemd is not the init system"})
+	got = formatFaultError(hinted)
+	if !strings.Contains(got, "start Xray runtime") || !strings.Contains(got, "systemd is not the init system") {
+		t.Fatalf("expected safe hint, got %q", got)
+	}
+	if !strings.Contains(got, "runtime_apply_failed") {
+		t.Fatalf("expected fault code, got %q", got)
+	}
 }
 
 func TestUpAndSyncHelpIncludeForegroundAndProcessModeFlags(t *testing.T) {

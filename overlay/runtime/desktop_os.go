@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,7 +17,11 @@ import (
 	"time"
 )
 
-type osDesktopBackend struct{}
+type osDesktopBackend struct {
+	logDirectory string
+}
+
+var systemdLookPath = exec.LookPath
 
 func newOSDesktopBackend() *osDesktopBackend { return &osDesktopBackend{} }
 
@@ -55,50 +58,23 @@ func (b *osDesktopBackend) Run(ctx context.Context, name string, args ...string)
 }
 
 func (b *osDesktopBackend) Start(executable string, args []string, revision, configDigest string) (processIdentity, error) {
-	if !shouldUseSystemd(os.Getenv("XCONNECT_LINUX_PROCESS_MODE"), os.Stat, exec.LookPath) {
-		return startDirectLinuxProcess(executable, args, revision, configDigest)
+	if !shouldUseSystemd(os.Getenv("XCONNECT_LINUX_PROCESS_MODE"), systemSystemdLive, systemdLookPath) {
+		return b.startDirectLinuxProcess(executable, args, revision, configDigest)
 	}
-	unit := fmt.Sprintf("xconnect-one-xray-%d-%d", os.Getpid(), time.Now().UnixNano())
-	command := exec.Command("systemd-run", systemdRunArguments(unit, executable, args)...)
-	command.Stdin = nil
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
-		return processIdentity{}, err
-	}
-	pid, err := systemdMainPID(unit, 3*time.Second)
-	if err != nil {
-		_ = exec.Command("systemctl", "stop", unit).Run()
-		return processIdentity{}, err
-	}
-	identity := processIdentity{
-		PID:          pid,
-		Executable:   canonicalPath(executable),
-		ConfigPath:   configArgument(args),
-		ConfigSHA256: configDigest,
-		Revision:     revision,
-	}
-	startToken, err := linuxProcessStartToken(identity.PID)
-	if err != nil {
-		_ = exec.Command("systemctl", "stop", unit).Run()
-		return processIdentity{}, err
-	}
-	identity.StartToken = startToken
-	return identity, nil
+	return b.startSystemdRun(executable, args, revision, configDigest)
 }
 
-func shouldUseSystemd(mode string, stat func(string) (os.FileInfo, error), lookPath func(string) (string, error)) bool {
+func shouldUseSystemd(mode string, systemdLive func() bool, lookPath func(string) (string, error)) bool {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "systemd":
 		return true
 	case "direct":
 		return false
 	default:
-		if stat == nil || lookPath == nil {
+		if systemdLive == nil || lookPath == nil {
 			return false
 		}
-		info, err := stat("/run/systemd/system")
-		if err != nil || !info.IsDir() {
+		if !systemdLive() {
 			return false
 		}
 		if _, err := lookPath("systemd-run"); err != nil {
@@ -109,40 +85,6 @@ func shouldUseSystemd(mode string, stat func(string) (os.FileInfo, error), lookP
 		}
 		return true
 	}
-}
-
-func startDirectLinuxProcess(executable string, args []string, revision, configDigest string) (processIdentity, error) {
-	command := exec.Command(executable, args...)
-	command.Stdin = nil
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := command.Start(); err != nil {
-		return processIdentity{}, err
-	}
-	pid := command.Process.Pid
-	identity := processIdentity{
-		PID:          pid,
-		Executable:   canonicalPath(executable),
-		ConfigPath:   configArgument(args),
-		ConfigSHA256: configDigest,
-		Revision:     revision,
-	}
-	state, startToken, err := linuxProcessStat(pid)
-	if err != nil || state == 'Z' || state == 'X' {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		if err == nil {
-			err = errors.New("direct child exited immediately")
-		}
-		return processIdentity{}, err
-	}
-	identity.StartToken = startToken
-	// Reap child in background so long-lived container supervisors never accumulate zombies.
-	go func() {
-		_ = command.Wait()
-	}()
-	return identity, nil
 }
 
 func systemdRunArguments(unit, executable string, args []string) []string {
@@ -223,7 +165,8 @@ func (b *osDesktopBackend) Stop(identity processIdentity) error {
 	if err != nil {
 		return err
 	}
-	if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	_ = syscall.Kill(-identity.PID, syscall.SIGTERM)
+	if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -241,7 +184,11 @@ func (b *osDesktopBackend) Stop(identity processIdentity) error {
 	if err != nil || !alive {
 		return err
 	}
-	return process.Signal(syscall.SIGKILL)
+	_ = syscall.Kill(-identity.PID, syscall.SIGKILL)
+	if err := process.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
 }
 
 func (b *osDesktopBackend) LoopbackAvailable(address string) (bool, error) {

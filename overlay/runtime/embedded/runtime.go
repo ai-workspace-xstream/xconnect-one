@@ -70,6 +70,10 @@ func (r *Runtime) Apply(ctx context.Context, request overlayruntime.ApplyRequest
 
 	localPrefix, allowedPrefixes, err := parseNetworkPrefixes(request.Config)
 	if err != nil {
+		var fe *fault.Error
+		if errors.As(err, &fe) {
+			return overlayruntime.ApplyResult{}, err
+		}
 		return overlayruntime.ApplyResult{}, fault.New(fault.CodeInvalidConfig, "parse overlay network prefixes", err)
 	}
 	mtu := defaultTUNMTU(request.Config.WireGuard.MTU)
