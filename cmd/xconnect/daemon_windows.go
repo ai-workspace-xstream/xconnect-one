@@ -18,6 +18,8 @@ const (
 	stillActiveProcessCode = 259
 )
 
+func preserveDaemonOwnership(_, _, _ string) {}
+
 func configureDetachedProcess(cmd *exec.Cmd) {
 	if cmd == nil {
 		return

@@ -8,6 +8,10 @@ func privateOwnedRegular(info os.FileInfo) bool {
 	return info != nil && info.Mode().IsRegular()
 }
 
+func privateOwnedRegularForStateDir(info os.FileInfo, _ string) bool {
+	return privateOwnedRegular(info)
+}
+
 func directoryOwnerUID(os.FileInfo) (uint32, bool) {
 	return 0, false
 }

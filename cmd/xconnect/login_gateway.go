@@ -972,23 +972,16 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 		}
 	}
 
-	if *bootstrapRuntime {
-		if _, err := overlayruntime.Bootstrap(ctx, overlayruntime.BootstrapOptions{
-			StateDirectory:        *stateDirectory,
-			ReleaseBaseURL:        *runtimeReleaseBaseURL,
-			InstallSystemPackages: true,
-		}); err != nil {
-			return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, err)
-		}
-		_, _ = fmt.Fprintln(stderr, "xconnect: managed runtime ready")
+	stStore := state.NewStore(*stateDirectory)
+	runtimeInstance := newRuntime(*stateDirectory)
+	if err := ensureBootstrapReady(ctx, *bootstrapRuntime, runtimeInstance, *stateDirectory, *runtimeReleaseBaseURL, stderr); err != nil {
+		return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, err)
 	}
 
 	client, err := controlplane.New(record.Controller, "", httpClient)
 	if err != nil {
 		return err
 	}
-	stStore := state.NewStore(*stateDirectory)
-	runtimeInstance := newRuntime(*stateDirectory)
 	if daemonMode {
 		if _, isEmbedded := runtimeInstance.(*embedded.Runtime); isEmbedded && runtime.GOOS != "windows" && os.Geteuid() != 0 {
 			return handleRuntimePermissionError(ctx, "up", *stateDirectory, args, *noSudo, stderr, fault.New(fault.CodeRuntimePermission, "start embedded daemon runtime", nil))

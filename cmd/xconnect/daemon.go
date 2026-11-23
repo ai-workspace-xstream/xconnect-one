@@ -97,10 +97,12 @@ func writeDaemonPID(stateDir string, pid int) error {
 	if err := os.WriteFile(tmpPath, []byte(strconv.Itoa(pid)+"\n"), 0o600); err != nil {
 		return err
 	}
+	preserveDaemonOwnership(stateDir, runtimeDir, tmpPath)
 	if err := os.Rename(tmpPath, pidPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
+	preserveDaemonOwnership(stateDir, runtimeDir, pidPath)
 	return nil
 }
 
@@ -200,9 +202,11 @@ func spawnDaemonUp(ctx context.Context, opts daemonUpOptions) (daemonStartResult
 	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
 		return daemonStartResult{}, fault.New(fault.CodeStateIO, "create daemon runtime directory", err)
 	}
+	preserveDaemonOwnership(opts.StateDir, runtimeDir, "")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return daemonStartResult{}, fault.New(fault.CodeStateIO, "create daemon log directory", err)
 	}
+	preserveDaemonOwnership(opts.StateDir, filepath.Dir(logPath), "")
 
 	if pid, err := readDaemonPID(opts.StateDir); err == nil && pid > 0 {
 		if isDaemonProcessAlive(pid) {
@@ -244,6 +248,7 @@ func spawnDaemonUp(ctx context.Context, opts daemonUpOptions) (daemonStartResult
 	if err != nil {
 		return daemonStartResult{}, fault.New(fault.CodeStateIO, "open daemon log file", err)
 	}
+	preserveDaemonOwnership(opts.StateDir, filepath.Dir(logPath), logPath)
 
 	childArgs := make([]string, 0, len(opts.ChildArgsPrefix)+len(opts.OrigArgs)+8)
 	childArgs = append(childArgs, opts.ChildArgsPrefix...)

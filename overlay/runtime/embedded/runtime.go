@@ -314,7 +314,8 @@ func (r *Runtime) writeActiveManifestLocked(cfg model.Config) error {
 	if manifestPath == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+	runtimeDir := filepath.Dir(manifestPath)
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
 		return err
 	}
 	data := activeManifest{
@@ -336,7 +337,13 @@ func (r *Runtime) writeActiveManifestLocked(cfg model.Config) error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, manifestPath)
+	preserveRuntimeOwnership(r.stateDir, runtimeDir, tmp)
+	if err := os.Rename(tmp, manifestPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	preserveRuntimeOwnership(r.stateDir, runtimeDir, manifestPath)
+	return nil
 }
 
 func (r *Runtime) readActiveManifest() (activeManifest, bool) {

@@ -24,6 +24,7 @@ import (
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/model"
 	overlayruntime "github.com/ai-workspace-xstream/XConnect-One/overlay/runtime"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/runtime/embedded"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/signedconfig"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/state"
 )
@@ -211,20 +212,27 @@ func TestProductionJoinFailsClosedWithoutPlatformRuntimeAndDoesNotAck(t *testing
 }
 
 func TestPlatformRuntimeSelectsControlledClientRuntime(t *testing.T) {
-	linuxRuntime := platformRuntime("linux", t.TempDir())
-	if _, ok := linuxRuntime.(*overlayruntime.Desktop); !ok {
-		t.Fatalf("linux runtime = %T, want desktop runtime", linuxRuntime)
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		defaultRuntime := platformRuntime(goos, t.TempDir())
+		if _, ok := defaultRuntime.(*embedded.Runtime); !ok {
+			t.Fatalf("%s default runtime = %T, want *embedded.Runtime", goos, defaultRuntime)
+		}
 	}
-	darwinRuntime := platformRuntime("darwin", t.TempDir())
+
+	linuxRuntime := platformRuntimeWithMode("linux", t.TempDir(), "external")
+	if _, ok := linuxRuntime.(*overlayruntime.Desktop); !ok {
+		t.Fatalf("linux external runtime = %T, want desktop runtime", linuxRuntime)
+	}
+	darwinRuntime := platformRuntimeWithMode("darwin", t.TempDir(), "external")
 	if _, ok := darwinRuntime.(*overlayruntime.Desktop); !ok {
-		t.Fatalf("darwin runtime = %T, want desktop runtime", darwinRuntime)
+		t.Fatalf("darwin external runtime = %T, want desktop runtime", darwinRuntime)
 	}
 	if runtime.GOOS == "windows" {
-		if _, ok := platformRuntime("windows", t.TempDir()).(*overlayruntime.Desktop); !ok {
-			t.Fatalf("windows runtime = %T, want external desktop runtime", platformRuntime("windows", t.TempDir()))
+		if _, ok := platformRuntimeWithMode("windows", t.TempDir(), "external").(*overlayruntime.Desktop); !ok {
+			t.Fatalf("windows runtime = %T, want external desktop runtime", platformRuntimeWithMode("windows", t.TempDir(), "external"))
 		}
 	} else {
-		runtimeHost := platformRuntime("windows", t.TempDir())
+		runtimeHost := platformRuntimeWithMode("windows", t.TempDir(), "external")
 		diagnostics, err := runtimeHost.Diagnose(t.Context())
 		if err != nil || len(diagnostics) != 2 || diagnostics[1].Code != "windows_service_host_required" || !diagnostics[1].Healthy {
 			t.Fatalf("windows diagnostics=%#v err=%v", diagnostics, err)
@@ -805,5 +813,32 @@ func TestExtractRuntimeModeAndPlatformSelection(t *testing.T) {
 	rtExternal := platformRuntimeWithMode("darwin", t.TempDir(), "external")
 	if _, ok := rtExternal.(*overlayruntime.Desktop); !ok {
 		t.Fatalf("expected *overlayruntime.Desktop for external mode, got %T", rtExternal)
+	}
+}
+
+func TestLeadingStateDirFlagAndZeroDependencyEmbeddedCommands(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("XCONNECT_ONE_RUNTIME", "")
+	stateDir := t.TempDir()
+
+	// 1. Leading --state-dir before subcommand works cleanly for status & diagnose without external xray/wg-quick.
+	for _, args := range [][]string{
+		{"--state-dir", stateDir, "status"},
+		{"--state-dir=" + stateDir, "diagnose"},
+		{"runtime", "bootstrap", "--state-dir", stateDir},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := run(t.Context(), args, &stdout, &stderr, http.DefaultClient); err != nil {
+			t.Fatalf("run(%v) failed without external tools: %v (stderr=%s)", args, err, stderr.String())
+		}
+		if args[0] == "runtime" {
+			var boot overlayruntime.BootstrapResult
+			if err := json.Unmarshal(stdout.Bytes(), &boot); err != nil {
+				t.Fatalf("decode bootstrap result: %v (%s)", err, stdout.String())
+			}
+			if boot.RuntimeMode != "embedded" || boot.XrayVersion != "embedded" || boot.SystemWireGuard || !boot.AlreadyProvisioned {
+				t.Fatalf("unexpected embedded bootstrap result: %+v", boot)
+			}
+		}
 	}
 }

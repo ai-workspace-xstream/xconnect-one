@@ -7,7 +7,7 @@ umask 022
 # can be pointed at an approved mirror for private GitHub repositories.
 
 readonly RELEASE_REPOSITORY="ai-workspace-xstream/XConnect-One"
-readonly DEFAULT_VERSION="v0.1.11"
+readonly DEFAULT_VERSION="v0.1.22"
 version="${XCONNECT_ONE_VERSION:-$DEFAULT_VERSION}"
 release_base="${XCONNECT_ONE_RELEASE_BASE_URL:-https://github.com/${RELEASE_REPOSITORY}/releases/download}"
 
@@ -42,7 +42,7 @@ Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
 ProtectSystem=full
-ReadWritePaths=${s_dir} /run /etc/wireguard
+ReadWritePaths=${s_dir} /run -/etc/wireguard
 
 [Install]
 WantedBy=multi-user.target
@@ -94,13 +94,15 @@ if [[ -d "$install_dir" && -w "$install_dir" ]] ||
   [[ ! -e "$install_dir" && -d "$install_parent" && -w "$install_parent" ]]; then
   install -d -m 0755 "$install_dir"
   install -m 0755 "$tmp_dir/$asset" "$install_dir/xconnect"
+  ln -sf xconnect "$install_dir/xconnect-one"
 else
   command -v sudo >/dev/null || die "write access to $install_dir or sudo is required"
   sudo install -d -m 0755 "$install_dir"
   sudo install -m 0755 "$tmp_dir/$asset" "$install_dir/xconnect"
+  sudo ln -sf xconnect "$install_dir/xconnect-one"
 fi
 
-echo "installed XConnect One $version ($asset) at $install_dir/xconnect"
+echo "installed XConnect One $version ($asset) at $install_dir/xconnect (and $install_dir/xconnect-one)"
 
 if [[ "$os" == "Linux" ]]; then
   unit_content="$(render_systemd_unit "$install_dir/xconnect" "$state_dir")"
