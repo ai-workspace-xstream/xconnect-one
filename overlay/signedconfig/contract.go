@@ -409,11 +409,24 @@ func Compile(config Config) (model.Config, error) {
 		return model.Config{}, fault.New(fault.CodeInvalidSignedConfig, "compile signed config", nil)
 	}
 	digest := sha256.Sum256(payload)
+	networkCIDR := ""
+	if len(peer.AllowedIPs) > 0 {
+		networkCIDR = peer.AllowedIPs[0]
+	}
 	compiled := model.Config{
 		SchemaVersion: model.SchemaVersionV1,
 		Revision:      config.ConfigID,
 		Digest:        hex.EncodeToString(digest[:]),
-		Network:       model.Network{ID: config.NetworkID},
+		Network: model.Network{
+			ID:                  config.NetworkID,
+			CIDR:                networkCIDR,
+			GatewayID:           peer.GatewayID,
+			GatewayWireGuardKey: peer.PublicKey,
+			GatewayEndpointHost: config.Transport.Remote.Host,
+			GatewayEndpointPort: config.Transport.Remote.Port,
+			TransportServerName: config.Transport.Remote.ServerName,
+			TransportPort:       config.Transport.Remote.Port,
+		},
 		Device: model.Device{
 			ID:               config.DeviceID,
 			NetworkID:        config.NetworkID,
