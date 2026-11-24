@@ -1,166 +1,82 @@
 # XConnect-One
 
-**XConnect-One** is the single-binary, cross-platform endpoint client for **XConnect Zero** — a self-hostable Zero Trust WireGuard overlay carried over VLESS/XHTTP TLS (`443`).
+<p align="center">
+  <img src="assets/logo.png" alt="XConnect-One Logo" width="200"/>
+</p>
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+## Open-source zero-trust overlay client | 开源零信任内网互联客户端
 
-- **Online Demo**: <https://console.svc.plus/panel/xconnect-zero>
-- **Gateway Repository**: <https://github.com/ai-workspace-xstream/xconnect-gateway>
-- **License**: Apache 2.0 — 100% open source and self-host friendly.
+**XConnect-One** is the single-binary, cross-platform endpoint client for **XConnect Zero** — a self-hostable Zero Trust WireGuard overlay carried over VLESS/XHTTP TLS (`443`). It runs across **macOS, Linux, Docker containers, and Windows** with zero external runtime dependencies and coexists cleanly with everyday AI proxy tools.
 
----
+**XConnect-One** 是 **XConnect Zero** 的单二进制跨平台终端客户端，基于 VLESS/XHTTP TLS（`443`）承载零信任 WireGuard 内网隧道，支持 **macOS、Linux、Docker 无 systemd 容器和 Windows**。内置精简版 `xray-core` 与 `wireguard-go`，不劫持默认路由，可与现有 AI 代理加速工具无缝共存。
 
-## Key Features
+<p align="center">
+  <img src="docs/images/xconnect-one-overview.svg" alt="XConnect-One cross-platform zero-trust overlay architecture across macOS, Linux, Docker, and Windows" width="100%"/>
+</p>
+<p align="center"><sub>Architecture overview · 单二进制 WireGuard-over-VLESS/XHTTP 零信任内网互联架构。</sub></p>
 
-- **Single-Binary Embedded Runtime (`--runtime=embedded`, default)**: Bundles minimal `xray-core` (`dokodemo-door` + `vless/xhttp/tls`, excluding ~29 MB geo assets by default) and `wireguard-go` (in-process UAPI) with native TUN/route configurators — zero external `wg-quick`, `wg`, or `xray` binaries required.
-- **Coexists with AI Proxy Acceleration**: Runs WireGuard over HTTPS (`443`, VLESS/XHTTP + TLS) without hijacking your default route, allowing seamless interconnection of Linux VPS, Grok Bot containers, and home macOS/Windows machines alongside existing AI proxy tools.
-- **Cross-Platform & Container Native**: Supports **macOS**, **Linux (systemd & non-systemd Docker containers)**, and **Windows (Wintun)**. TUN handles are fd-scoped and automatically cleaned up on exit.
-- **Zero-Trust Security & Resilience**: Ed25519-signed configurations, automatic network-change / sleep-wake recovery with millisecond Level-1 transport hot-restart, and optional fallback to `--runtime=external`.
+### What you can do | 主要功能
 
----
+- **Single-binary embedded runtime｜单二进制内嵌运行时** — Bundles minimal `xray-core` (`dokodemo-door` + `vless/xhttp/tls`, excluding ~29 MB geo assets) and `wireguard-go` (in-process UAPI) with native TUN/route setup (`--runtime=embedded`, default; optional `--runtime=external` fallback).
+- **Coexist with AI proxies｜与 AI 代理无缝共存** — Tunnels WireGuard over HTTPS (`443`) without hijacking your default route, seamlessly interconnecting Linux VPS, containers, and desktops alongside existing AI proxy clients.
+- **Cross-platform & container native｜跨平台与容器原生支持** — Supports **macOS** (LaunchDaemon), **Linux** (systemd / `.deb` / `.rpm`), **non-systemd Docker containers** (`up` / `up -D`), and **Windows** (Wintun + Task Scheduler) with automatic fd-scoped TUN cleanup.
+- **Zero-trust security & diagnostics｜零信任安全与自愈诊断** — Ed25519-signed configs, global unique `/etc/xconnect-one/device-id`, automatic network-change / sleep-wake hot recovery, plus `status`, `diagnose`, and AI-ready `debug --prompt`.
 
-## Quick Start
+### Start in three steps | 三步开始
 
-### 1. macOS (Homebrew + LaunchDaemon Autostart)
+**Install → Login & join → Start tunnel**<br />
+**安装 → 登录并入网 → 启动零信任隧道**
 
-Install to the standard Homebrew prefix (`/opt/homebrew/bin` on Apple Silicon, `/usr/local/bin` on Intel):
+1. **Install｜安装** — Download a release package or binary for your platform from [GitHub Releases](https://github.com/ai-workspace-xstream/xconnect-one/releases), or follow the [Cross-Platform Install & Deployment Guide](docs/cross-platform-install-and-deployment.md) for Homebrew, source build, and OS autostart setup.
+2. **Login & join｜登录并入网** — Sign in with `xconnect-one login` and enroll your device with `xconnect-one join --gateway <url>` (or pass a one-time invite link from the console).
+3. **Start & verify｜启动并验证** — Launch the tunnel with `sudo xconnect-one up -D` (or enable systemd / LaunchDaemon / Task Scheduler), then inspect connectivity via `xconnect-one status` and `xconnect-one diagnose`.
+
+> Supports both account login and one-time invite links (`xconnect-one join "xconnect://join/<token>?controller=https%3A%2F%2Faccounts.svc.plus"`); Apache 2.0 licensed and 100% self-host friendly. 支持账号登录与控制台一次性邀请码入网；基于 Apache 2.0 协议开源，支持全链路私有化自建。
+
+See the [XConnect Zero Console (Online Demo)](https://console.svc.plus/panel/xconnect-zero), [XConnect-Gateway](https://github.com/ai-workspace-xstream/xconnect-gateway), [XConnect App](https://github.com/ai-workspace-xstream/xconnect-app), [Quick TL;DR Guide](docs/xconnect-zero-cloud-tldr.md), and [CLI User Guide (中文)](docs/cli-user-guide.zh-CN.md) for details.
+
+## TL;DR
 
 ```bash
-# Option A: Install via Homebrew formula (or build from source into Homebrew bin)
-brew install --formula ./Formula/xconnect-one.rb
-
-# Option B: Build latest main directly into Homebrew prefix
-rm -rf /tmp/xconnect-one && \
-  git clone --depth 1 https://github.com/ai-workspace-xstream/xconnect-one.git /tmp/xconnect-one && \
-  (cd /tmp/xconnect-one && CGO_ENABLED=0 GOTOOLCHAIN=auto go build -trimpath -ldflags='-s -w' -o /tmp/xconnect-one/xconnect-one ./cmd/xconnect) && \
-  install -m 0755 /tmp/xconnect-one/xconnect-one "$(brew --prefix)/bin/xconnect-one" && \
-  ln -sf "$(brew --prefix)/bin/xconnect-one" "$(brew --prefix)/bin/xconnect" && \
-  rm -rf /tmp/xconnect-one
-
-# Login & enroll
 xconnect-one login
 xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
-```
-
-Register and start the standard **LaunchDaemon** (`/Library/LaunchDaemons/com.xconnect.one.plist`) for boot autostart:
-
-```bash
-sudo env XCONNECT_ONE_STATE_DIR="$HOME/.xconnect-one-user" \
-  XCONNECT_ONE_BINARY="$(brew --prefix)/bin/xconnect-one" \
-  bash scripts/setup-xconnect-one-macos.sh
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.xconnect.one.plist
-
-# Or run manually without LaunchDaemon:
 sudo xconnect-one up -D
+sudo xconnect-one status
+sudo xconnect-one diagnose
+sudo xconnect-one down
 ```
 
-### 2. Linux (Standard Directories + systemd Autostart)
+## Downloads
 
-Install via `.deb` / `.rpm` release package (installs `/usr/bin/xconnect-one` and `/etc/systemd/system/xconnect-one-sync.service`) or via the installer script (`/usr/local/bin/xconnect` + `/var/lib/xconnect-one`):
+<!-- SUPPORT_MATRIX:START -->
+| 平台 | 架构 | 测试状态 | 下载 |
+|------|------|----------|------|
+| macOS | arm64 | ✅ 已测试 | [DMG](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-macos-arm64.dmg) / [Binary](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-macos-arm64) |
+| macOS | amd64 | ⚠️ 未测试 | [DMG](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-macos-amd64.dmg) / [Binary](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-macos-amd64) |
+| Linux | amd64 | ✅ 已测试 | [DEB](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one_0.1.22_amd64.deb) / [RPM](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-0.1.22.x86_64.rpm) / [TAR.GZ](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-linux-amd64.tar.gz) / [ZIP](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-linux-amd64.zip) / [Binary](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-linux-amd64) |
+| Linux | arm64 | ⚠️ 未测试 | [DEB](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one_0.1.22_arm64.deb) / [RPM](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-0.1.22.aarch64.rpm) / [TAR.GZ](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-linux-arm64.tar.gz) / [ZIP](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-linux-arm64.zip) / [Binary](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-linux-arm64) |
+| Windows | amd64 | ✅ 已测试 | [Portable ZIP](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-windows-amd64.zip) / [EXE](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/xconnect-one-windows-amd64.exe) |
 
-```bash
-# Option A: Install release package (Debian/Ubuntu .deb or Fedora/RHEL .rpm)
-# sudo dpkg -i xconnect-one_<version>_amd64.deb   # Debian / Ubuntu
-# sudo rpm -Uvh xconnect-one-<version>.x86_64.rpm # Fedora / RHEL
+> 当前下载链接指向 GitHub Release [`v0.1.22`](https://github.com/ai-workspace-xstream/xconnect-one/releases/tag/v0.1.22)（校验文件：[`SHA256SUMS`](https://github.com/ai-workspace-xstream/xconnect-one/releases/download/v0.1.22/SHA256SUMS)）。
+<!-- SUPPORT_MATRIX:END -->
 
-# Option B: Build from source into standard /usr/local/bin
-set -euo pipefail
-SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
-if ! command -v git >/dev/null 2>&1 || ! command -v go >/dev/null 2>&1; then
-  if command -v apt-get >/dev/null 2>&1; then
-    $SUDO apt-get update && $SUDO apt-get install -y --no-install-recommends git ca-certificates golang
-  elif command -v dnf >/dev/null 2>&1; then
-    $SUDO dnf install -y git ca-certificates golang
-  fi
-fi
-rm -rf /tmp/xconnect-one
-git clone --depth 1 https://github.com/ai-workspace-xstream/xconnect-one.git /tmp/xconnect-one
-(cd /tmp/xconnect-one && CGO_ENABLED=0 GOTOOLCHAIN=auto go build -trimpath -ldflags='-s -w' -o /tmp/xconnect-one/xconnect-one ./cmd/xconnect)
-$SUDO install -m 0755 /tmp/xconnect-one/xconnect-one /usr/local/bin/xconnect-one
-$SUDO ln -sf /usr/local/bin/xconnect-one /usr/local/bin/xconnect
-rm -rf /tmp/xconnect-one
-```
+See [GitHub Releases](https://github.com/ai-workspace-xstream/xconnect-one/releases) for all build artifacts, or the [Cross-Platform Install & Deployment Guide](docs/cross-platform-install-and-deployment.md) for Homebrew, source builds, Docker containers, and autostart services.
 
-Enroll and enable the default **systemd** service (`xconnect-one-sync.service`) for boot autostart:
+## Learn More
 
-```bash
-sudo xconnect-one login --state-dir /var/lib/xconnect-one
-sudo xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus --state-dir /var/lib/xconnect-one
-sudo systemctl enable --now xconnect-one-sync.service
-sudo systemctl status xconnect-one-sync.service
-```
-
-### 3. Non-systemd / Special Environments (e.g. Docker, Grok Bot)
-
-In containers or minimal Linux environments without `systemd`, run the single `linux/amd64` or `linux/arm64` binary with `NET_ADMIN` + `/dev/net/tun` using either **foreground mode** (`up`) or **built-in background daemon mode** (`up -D`):
-
-```bash
-# Foreground mode (recommended for container PID 1 / supervisord)
-docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
-  xconnect-one up --state-dir /var/lib/xconnect-one
-
-# Built-in self-daemonizing background mode (writes PID & logs under <state-dir>/runtime/)
-xconnect-one up -D --state-dir /var/lib/xconnect-one
-```
-
-### 4. Windows (Standard Program Files + Task Scheduler Autostart)
-
-1. Install into `C:\Program Files\XConnect\` (place `xconnect-one.exe` and matching `amd64` [`wintun.dll`](https://www.wintun.net/) in the same directory) with standard state directory `C:\ProgramData\XConnect`:
-2. Run in an **Administrator** PowerShell to enroll and register boot autostart via **Windows Task Scheduler** (`SYSTEM` at startup):
-
-```powershell
-$InstallDir = "$env:ProgramFiles\XConnect"
-$StateDir   = "$env:ProgramData\XConnect"
-$ExePath    = Join-Path $InstallDir "xconnect-one.exe"
-
-# Login & enroll into standard system state directory
-& $ExePath login --state-dir $StateDir
-& $ExePath join --gateway https://ph-xconnect-gateway-01.svc.plus --state-dir $StateDir
-
-# Register standard SYSTEM startup task (or use scripts/install-xconnect-one.ps1)
-schtasks /create /tn XConnectOneSync `
-  /tr "`"$ExePath`" sync --watch --interval=60s --state-dir `"$StateDir`"" `
-  /sc onstart /ru "SYSTEM" /rl HIGHEST /f
-schtasks /run /tn XConnectOneSync
-
-# Or run manually in foreground / background daemon mode:
-# & $ExePath up --state-dir $StateDir
-# & $ExePath up -D --state-dir $StateDir
-```
-
-> Invite-based enrollment also works on all platforms:
-> `xconnect-one join "xconnect://join/<token>?controller=https%3A%2F%2Faccounts.svc.plus"`
-
----
-
-## Common Commands
-
-| Command | Description |
-| :--- | :--- |
-| `xconnect-one login` | Authenticate with `accounts.svc.plus` |
-| `xconnect-one join [--gateway <url>] [--regenerate-device-id]` | Enroll device (persisting unique `xconnect-<os>-<host>-<8hex>` ID to `/etc/xconnect-one/device-id`) and fetch signed config |
-| `xconnect-one up [-D\|--daemon] [--log-file <path>] [--runtime=embedded\|external]` | Start overlay tunnel and supervision loop (foreground by default, or background daemon with `-D` / `--daemon`; default log `<state-dir>/runtime/xconnect-one.log`) |
-| `xconnect-one down` | Stop tunnel/background daemon and clean up interface/routes |
-| `xconnect-one status` | Inspect tunnel status, local overlay IP/CIDR, TUN interface, and gateway endpoint/overlay IP |
-| `xconnect-one diagnose` | Run structured health checks across state, credentials, and embedded runtime |
-| `xconnect-one debug [--prompt\|--json] [--tail N]` | Generate a secret-redacted diagnostic report and copy-pasteable AI Agent debug prompt |
-
----
-
-## Documentation
-
-| Document | Topic |
-| :--- | :--- |
-| [docs/xconnect-zero-cloud-tldr.md](docs/xconnect-zero-cloud-tldr.md) | Quick TL;DR operational guide (client onboarding, global `/etc/xconnect-one/device-id`, gateway setup) |
-| [docs/cross-platform-install-and-deployment.md](docs/cross-platform-install-and-deployment.md) | Full installation & deployment guide (macOS, Linux, Docker, Windows, Gateway) |
-| [docs/cli-user-guide.zh-CN.md](docs/cli-user-guide.zh-CN.md) | Chinese CLI user guide |
-| [docs/macos-runtime-setup.md](docs/macos-runtime-setup.md) | macOS LaunchDaemon autostart & recovery |
-| [docs/windows-runtime.md](docs/windows-runtime.md) | Windows runtime & Wintun notes |
-| [docs/self-hosted-install-and-validation.md](docs/self-hosted-install-and-validation.md) | Self-hosted deployment & validation |
-| [docs/self-registration.md](docs/self-registration.md) | Device self-registration workflow |
-| [docs/zero-lab.md](docs/zero-lab.md) | Local Zero lab testing |
-
----
+- [Quick TL;DR Guide (中文)](docs/xconnect-zero-cloud-tldr.md)
+- [Cross-Platform Install & Deployment Guide (macOS / Linux / Docker / Windows / Gateway)](docs/cross-platform-install-and-deployment.md)
+- [CLI User Guide & Command Reference (中文)](docs/cli-user-guide.zh-CN.md)
+- [Architecture: WireGuard over VLESS/XHTTP (EN)](docs/architecture/xconnect-zero-wireguard-over-vless.md) / [中文](docs/architecture/xconnect-zero-wireguard-over-vless.zh-CN.md)
+- [Multi-Peer Adaptive Data Plane Design (中文)](docs/architecture/one-peer-path-manager.zh-CN.md)
+- [macOS LaunchDaemon Autostart & Runtime Recovery](docs/macos-runtime-setup.md)
+- [macOS Controlled-Client Runtime](docs/macos-controlled-client-integration.md)
+- [Windows Runtime & Wintun Guide](docs/windows-runtime.md)
+- [Self-Hosted Installation & Validation](docs/self-hosted-install-and-validation.md)
+- [Device Self-Registration Workflow](docs/self-registration.md)
+- [Desktop UAT Verification (macOS & Windows)](docs/desktop-uat-verification.md)
+- [XConnect App Bridge Protocol v1](docs/integrations/xconnect-app-bridge-v1.md)
+- [Experimental Zero Lab Controller](docs/zero-lab.md)
 
 ## License
 
