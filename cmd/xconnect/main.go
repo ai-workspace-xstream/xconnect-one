@@ -226,7 +226,7 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 
 	if len(positionalArgs) == 0 {
-		return fault.New(fault.CodeInvalidInput, "expected login, logout, gateway, register, join, sync, up, down, leave, status, diagnose, runtime, credential, admin, policy, or version", nil)
+		return fault.New(fault.CodeInvalidInput, "expected login, logout, gateway, register, join, sync, up, down, leave, status, diagnose, debug, runtime, credential, admin, policy, or version", nil)
 	}
 	cmd := positionalArgs[0]
 	subArgs := positionalArgs[1:]
@@ -268,6 +268,8 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 		return runStatus(ctx, subArgs, stdout, stderr, newRuntime, newCredentials)
 	case "diagnose":
 		return runDiagnose(ctx, subArgs, stdout, stderr, newRuntime, newCredentials)
+	case "debug":
+		return runDebug(ctx, subArgs, stdout, stderr, newRuntime, newCredentials)
 	case "runtime":
 		return runRuntime(ctx, subArgs, stdout, stderr, newRuntime)
 	case "credential":

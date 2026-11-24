@@ -199,6 +199,12 @@ func (r *Runtime) DataPlaneHealth(_ context.Context) (overlayruntime.DataPlaneSt
 func (r *Runtime) Status(_ context.Context) (overlayruntime.Status, error) {
 	r.mu.Lock()
 	if r.applied && r.wg.Running() && r.xray.Running() {
+		addr := ""
+		localPort := 0
+		if r.activeCfg != nil {
+			addr = r.activeCfg.WireGuard.Address
+			localPort = r.activeCfg.Transport.LocalPort
+		}
 		status := overlayruntime.Status{
 			Available:      true,
 			Applied:        true,
@@ -208,6 +214,9 @@ func (r *Runtime) Status(_ context.Context) (overlayruntime.Status, error) {
 			CoreID:         model.CoreIDXray,
 			AdapterID:      model.AdapterIDXrayCore,
 			Interface:      r.ifaceName,
+			Address:        addr,
+			LocalPort:      localPort,
+			DaemonPID:      os.Getpid(),
 		}
 		r.mu.Unlock()
 		return status, nil
@@ -224,6 +233,9 @@ func (r *Runtime) Status(_ context.Context) (overlayruntime.Status, error) {
 			CoreID:         manifest.CoreID,
 			AdapterID:      manifest.AdapterID,
 			Interface:      manifest.Interface,
+			Address:        manifest.Address,
+			LocalPort:      manifest.LocalPort,
+			DaemonPID:      manifest.PID,
 		}, nil
 	}
 

@@ -30,6 +30,9 @@ type Status struct {
 	CoreID         string                   `json:"core_id,omitempty"`
 	AdapterID      string                   `json:"adapter_id,omitempty"`
 	Interface      string                   `json:"interface,omitempty"`
+	Address        string                   `json:"address,omitempty"`
+	LocalPort      int                      `json:"local_port,omitempty"`
+	DaemonPID      int                      `json:"daemon_pid,omitempty"`
 }
 
 type Diagnostic struct {

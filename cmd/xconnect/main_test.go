@@ -825,6 +825,9 @@ func TestLeadingStateDirFlagAndZeroDependencyEmbeddedCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"--state-dir", stateDir, "status"},
 		{"--state-dir=" + stateDir, "diagnose"},
+		{"--state-dir", stateDir, "debug"},
+		{"debug", "--state-dir", stateDir, "--prompt"},
+		{"debug", "--state-dir", stateDir, "--json"},
 		{"runtime", "bootstrap", "--state-dir", stateDir},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -839,6 +842,100 @@ func TestLeadingStateDirFlagAndZeroDependencyEmbeddedCommands(t *testing.T) {
 			if boot.RuntimeMode != "embedded" || boot.XrayVersion != "embedded" || boot.SystemWireGuard || !boot.AlreadyProvisioned {
 				t.Fatalf("unexpected embedded bootstrap result: %+v", boot)
 			}
+		}
+	}
+}
+
+func TestEnrichedStatusAndDebugCommandOutput(t *testing.T) {
+	stateDir, creds, _ := seedTestDeviceCredential(t)
+	store := state.NewStore(stateDir)
+	cfg := cliTestConfig()
+	cfg.Network.GatewayID = "ph-xconnect-gateway-01"
+	cfg.WireGuard.Address = "10.66.0.7/32"
+	cfg.WireGuard.GatewayWireGuardIP = "127.0.0.1"
+	cfg.WireGuard.PeerAllowedIPs = []string{"10.66.0.0/16"}
+	if err := store.SaveLastKnown(state.LastKnown{
+		Server:             "https://accounts.svc.plus",
+		DeviceID:           "dev_cli",
+		NetworkID:          "net-ph-xconnect",
+		Phase:              state.PhaseAcknowledged,
+		ConfigContract:     "signed",
+		SignedConfigID:     cfg.Revision,
+		SignedGeneration:   28,
+		WireGuardPublicKey: cfg.WireGuard.PeerPublicKey,
+		Config:             cfg,
+	}); err != nil {
+		t.Fatalf("SaveLastKnown: %v", err)
+	}
+
+	fakeRT := &overlayruntime.Fake{
+		StatusResult: overlayruntime.Status{
+			Available:      true,
+			Applied:        true,
+			ManagedRuntime: true,
+			RuntimeVersion: "embedded",
+			Revision:       cfg.Revision,
+			CoreID:         model.CoreIDXray,
+			AdapterID:      model.AdapterIDXrayCore,
+			Interface:      "xconone0",
+			Address:        "10.66.0.7/32",
+			LocalPort:      cfg.Transport.LocalPort,
+			DaemonPID:      12345,
+		},
+	}
+
+	// 1. Verify enriched status JSON
+	var statusOut, statusErr bytes.Buffer
+	if err := runWithFactories(t.Context(), []string{"status", "--state-dir", stateDir}, &statusOut, &statusErr, http.DefaultClient,
+		func(string) overlayruntime.Interface { return fakeRT },
+		func(string) credential.Store { return creds },
+	); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+	var st struct {
+		Joined     bool     `json:"joined"`
+		Controller string   `json:"controller"`
+		Address    string   `json:"address"`
+		OverlayIP  string   `json:"overlay_ip"`
+		Interface  string   `json:"interface"`
+		MTU        int      `json:"mtu"`
+		AllowedIPs []string `json:"allowed_ips"`
+		Gateway    *struct {
+			ID        string `json:"id"`
+			OverlayIP string `json:"overlay_ip"`
+			Endpoint  string `json:"endpoint"`
+			Transport string `json:"transport"`
+		} `json:"gateway"`
+	}
+	if err := json.Unmarshal(statusOut.Bytes(), &st); err != nil {
+		t.Fatalf("decode status: %v (%s)", err, statusOut.String())
+	}
+	if !st.Joined || st.OverlayIP != "10.66.0.7" || st.Address != "10.66.0.7/32" || st.Interface != "xconone0" {
+		t.Fatalf("unexpected status IP/interface fields: %+v", st)
+	}
+	if st.Gateway == nil || st.Gateway.ID != "ph-xconnect-gateway-01" || st.Gateway.OverlayIP != "10.66.0.1" || st.Gateway.Endpoint == "" {
+		t.Fatalf("unexpected status gateway fields: %+v", st.Gateway)
+	}
+
+	// 2. Verify debug markdown and prompt output
+	var mdOut, mdErr bytes.Buffer
+	if err := runWithFactories(t.Context(), []string{"debug", "--state-dir", stateDir}, &mdOut, &mdErr, http.DefaultClient,
+		func(string) overlayruntime.Interface { return fakeRT },
+		func(string) credential.Store { return creds },
+	); err != nil {
+		t.Fatalf("debug markdown failed: %v", err)
+	}
+	md := mdOut.String()
+	for _, want := range []string{
+		"XConnect-One Debug & Diagnostic Report",
+		"10.66.0.7/32",
+		"10.66.0.1",
+		"ph-xconnect-gateway-01",
+		"AI Agent Debug Prompt",
+		"ping -c 4 10.66.0.1",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("debug markdown missing %q:\n%s", want, md)
 		}
 	}
 }
