@@ -1,18 +1,21 @@
 # XConnect One CLI 使用手册
 
-`xconnect-one` 将认证登录、网关发现、设备入网、签名配置验证及隧道编排统一封装进 **`login`**、**`up`**、**`down`** 三个核心命令中，满足桌面端交互式与脚本化非交互式接入需求。
+`xconnect-one` 将认证登录、网关发现、设备入网、签名配置验证、隧道编排与诊断排障封装进一组简洁命令中，满足桌面端交互式与脚本化非交互式接入需求。
 
 ---
 
-## 一、核心三命令
+## 一、核心与常用命令
 
 | 命令 | 职责 | 常用用法 |
 |---|---|---|
-| `xconnect-one login` | 登录账号（支持邮箱密码 + MFA TOTP、OAuth `--web`），可选直接绑定网关 | `xconnect-one login` |
-| `xconnect-one up` | 自动完成网关选择/入网、拉取签名配置、启动 Xray + WireGuard 隧道 | `xconnect-one up` |
-| `xconnect-one down` | 断开隧道并清理网卡，保留登录会话与网关选择以便下次一键恢复 | `xconnect-one down` |
-
-此外，可通过 `xconnect-one -v` 或 `xconnect-one version` 查看当前客户端版本。
+| `xconnect-one login` | 登录 `accounts.svc.plus` 账号（支持邮箱密码 + MFA TOTP、OAuth `--web`），可选直接绑定网关 | `xconnect-one login` |
+| `xconnect-one join [--gateway <url>] [--regenerate-device-id]` | 注册设备（将唯一 `xconnect-<os>-<host>-<8hex>` ID 持久化至 `/etc/xconnect-one/device-id`）并拉取签名配置 | `xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus` |
+| `xconnect-one up [-D\|--daemon] [--log-file <path>] [--runtime=embedded\|external]` | 启动 Overlay 隧道与守护循环（默认前台运行，`-D` / `--daemon` 为后台守护模式，默认日志 `<state-dir>/runtime/xconnect-one.log`） | `sudo xconnect-one up -D` |
+| `xconnect-one down [--logout]` | 停止隧道 / 后台守护进程并清理网卡与路由；可选 `--logout` 清除登录会话 | `sudo xconnect-one down` |
+| `xconnect-one status` | 查看隧道状态、本机 Overlay IP/CIDR、TUN 网卡与当前网关入口 / Overlay IP | `sudo xconnect-one status` |
+| `xconnect-one diagnose` | 围绕状态文件、凭据与内嵌运行时执行结构化健康检查 | `sudo xconnect-one diagnose` |
+| `xconnect-one debug [--prompt\|--json] [--tail N]` | 生成自动脱敏的诊断报告，以及可直接粘贴给 AI Agent 的排障提示词 | `sudo xconnect-one debug --prompt` |
+| `xconnect-one version` / `-v` | 查看当前客户端版本、构建号与架构信息 | `xconnect-one -v` |
 
 ---
 
@@ -133,6 +136,7 @@ ping -c 3 10.66.0.1
 ### `up` 参数
 - `-D` / `--daemon`：后台守护模式启动隧道（默认日志写入 `<state-dir>/runtime/xconnect-one.log`）
 - `--log-file`：后台守护模式自定义日志文件路径
+- `--runtime`：运行时模式，默认 `embedded`（单二进制内嵌 `xray-core` + `wireguard-go`），可选 `external` 回退至外部二进制
 - `--gateway`：指定或切换目标网关（支持 Gateway ID、域名或 URL 如 `https://ph-xconnect-gateway-01.svc.plus`）
 - `--bootstrap`：启动前自动检查/安装受管 Xray 运行时
 - `--watch` / `--interval`：持续运行并按周期向控制面同步配置（默认 `1m`）
@@ -147,4 +151,14 @@ ping -c 3 10.66.0.1
 
 ### `down` 参数
 - `--logout`：断开隧道后同时清除本地登录会话
+- `--state-dir`：状态目录
+
+### `status` 与 `diagnose` 参数
+- `--state-dir`：指定要检查的本地状态目录；`status` 输出隧道状态、Overlay IP/CIDR、TUN 网卡与网关信息，`diagnose` 输出状态/凭据/运行时的结构化健康检查结果
+
+### `debug` 参数
+- `--format`：输出格式，支持 `markdown`（默认）、`prompt`、`json`
+- `--prompt`：仅输出可直接粘贴给 AI Agent 的脱敏排障提示词（等价于 `--format=prompt`）
+- `--json`：以 JSON 格式输出脱敏诊断报告（等价于 `--format=json`）
+- `--tail`：附加的后台守护日志行数（默认 `20`）
 - `--state-dir`：状态目录
