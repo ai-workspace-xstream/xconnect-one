@@ -21,34 +21,49 @@
 
 ## Quick Start
 
-### 1. macOS (Apple Silicon / Intel)
+### 1. macOS (Homebrew + LaunchDaemon Autostart)
+
+Install to the standard Homebrew prefix (`/opt/homebrew/bin` on Apple Silicon, `/usr/local/bin` on Intel):
 
 ```bash
-# One-shell build & install from source
+# Option A: Install via Homebrew formula (or build from source into Homebrew bin)
+brew install --formula ./Formula/xconnect-one.rb
+
+# Option B: Build latest main directly into Homebrew prefix
 rm -rf /tmp/xconnect-one && \
   git clone --depth 1 https://github.com/ai-workspace-xstream/xconnect-one.git /tmp/xconnect-one && \
   (cd /tmp/xconnect-one && CGO_ENABLED=0 GOTOOLCHAIN=auto go build -trimpath -ldflags='-s -w' -o /tmp/xconnect-one/xconnect-one ./cmd/xconnect) && \
-  install -m 0755 /tmp/xconnect-one/xconnect-one /opt/homebrew/bin/xconnect-one && \
+  install -m 0755 /tmp/xconnect-one/xconnect-one "$(brew --prefix)/bin/xconnect-one" && \
+  ln -sf "$(brew --prefix)/bin/xconnect-one" "$(brew --prefix)/bin/xconnect" && \
   rm -rf /tmp/xconnect-one
 
-# Login, join gateway, and start (add -D/--daemon for background daemon mode)
+# Login & enroll
 xconnect-one login
 xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
-sudo xconnect-one up -D
 ```
 
-Configure root LaunchDaemon autostart:
+Register and start the standard **LaunchDaemon** (`/Library/LaunchDaemons/com.xconnect.one.plist`) for boot autostart:
 
 ```bash
 sudo env XCONNECT_ONE_STATE_DIR="$HOME/.xconnect-one-user" \
-  XCONNECT_ONE_BINARY=/opt/homebrew/bin/xconnect-one \
+  XCONNECT_ONE_BINARY="$(brew --prefix)/bin/xconnect-one" \
   bash scripts/setup-xconnect-one-macos.sh
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.xconnect.one.plist
+
+# Or run manually without LaunchDaemon:
+sudo xconnect-one up -D
 ```
 
-### 2. Linux (Debian / Ubuntu / Fedora)
+### 2. Linux (Standard Directories + systemd Autostart)
+
+Install via `.deb` / `.rpm` release package (installs `/usr/bin/xconnect-one` and `/etc/systemd/system/xconnect-one-sync.service`) or via the installer script (`/usr/local/bin/xconnect` + `/var/lib/xconnect-one`):
 
 ```bash
-# One-shell install (uses distro repo packages; GOTOOLCHAIN=auto handles Go version)
+# Option A: Install release package (Debian/Ubuntu .deb or Fedora/RHEL .rpm)
+# sudo dpkg -i xconnect-one_<version>_amd64.deb   # Debian / Ubuntu
+# sudo rpm -Uvh xconnect-one-<version>.x86_64.rpm # Fedora / RHEL
+
+# Option B: Build from source into standard /usr/local/bin
 set -euo pipefail
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 if ! command -v git >/dev/null 2>&1 || ! command -v go >/dev/null 2>&1; then
@@ -62,35 +77,55 @@ rm -rf /tmp/xconnect-one
 git clone --depth 1 https://github.com/ai-workspace-xstream/xconnect-one.git /tmp/xconnect-one
 (cd /tmp/xconnect-one && CGO_ENABLED=0 GOTOOLCHAIN=auto go build -trimpath -ldflags='-s -w' -o /tmp/xconnect-one/xconnect-one ./cmd/xconnect)
 $SUDO install -m 0755 /tmp/xconnect-one/xconnect-one /usr/local/bin/xconnect-one
+$SUDO ln -sf /usr/local/bin/xconnect-one /usr/local/bin/xconnect
 rm -rf /tmp/xconnect-one
-xconnect-one --version
-
-# Login, join gateway, and start (add -D/--daemon for background daemon mode)
-xconnect-one login
-xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus
-$SUDO xconnect-one up -D
 ```
 
-### 3. Docker / Non-systemd Containers (e.g. Grok Bot)
-
-Run the single `linux/amd64` or `linux/arm64` binary inside any minimal container with TUN capability:
+Enroll and enable the default **systemd** service (`xconnect-one-sync.service`) for boot autostart:
 
 ```bash
-docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
-  xconnect-one up --state-dir /var/lib/xconnect-one
+sudo xconnect-one login --state-dir /var/lib/xconnect-one
+sudo xconnect-one join --gateway https://ph-xconnect-gateway-01.svc.plus --state-dir /var/lib/xconnect-one
+sudo systemctl enable --now xconnect-one-sync.service
+sudo systemctl status xconnect-one-sync.service
 ```
 
-### 4. Windows (Windows 10 / 11 / Server)
+### 3. Non-systemd / Special Environments (e.g. Docker, Grok Bot)
 
-1. Place `xconnect-one.exe` (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0`) and `amd64` [`wintun.dll`](https://www.wintun.net/) in the same directory.
-2. Run in an **Administrator** PowerShell:
+In containers or minimal Linux environments without `systemd`, run the single `linux/amd64` or `linux/arm64` binary with `NET_ADMIN` + `/dev/net/tun` using either **foreground mode** (`up`) or **built-in background daemon mode** (`up -D`):
+
+```bash
+# Foreground mode (recommended for container PID 1 / supervisord)
+docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
+  xconnect-one up --state-dir /var/lib/xconnect-one
+
+# Built-in self-daemonizing background mode (writes PID & logs under <state-dir>/runtime/)
+xconnect-one up -D --state-dir /var/lib/xconnect-one
+```
+
+### 4. Windows (Standard Program Files + Task Scheduler Autostart)
+
+1. Install into `C:\Program Files\XConnect\` (place `xconnect-one.exe` and matching `amd64` [`wintun.dll`](https://www.wintun.net/) in the same directory) with standard state directory `C:\ProgramData\XConnect`:
+2. Run in an **Administrator** PowerShell to enroll and register boot autostart via **Windows Task Scheduler** (`SYSTEM` at startup):
 
 ```powershell
-.\xconnect-one.exe login
-.\xconnect-one.exe join --gateway https://ph-xconnect-gateway-01.svc.plus
-.\xconnect-one.exe up
-# Or run detached in the background:
-.\xconnect-one.exe up -D
+$InstallDir = "$env:ProgramFiles\XConnect"
+$StateDir   = "$env:ProgramData\XConnect"
+$ExePath    = Join-Path $InstallDir "xconnect-one.exe"
+
+# Login & enroll into standard system state directory
+& $ExePath login --state-dir $StateDir
+& $ExePath join --gateway https://ph-xconnect-gateway-01.svc.plus --state-dir $StateDir
+
+# Register standard SYSTEM startup task (or use scripts/install-xconnect-one.ps1)
+schtasks /create /tn XConnectOneSync `
+  /tr "`"$ExePath`" sync --watch --interval=60s --state-dir `"$StateDir`"" `
+  /sc onstart /ru "SYSTEM" /rl HIGHEST /f
+schtasks /run /tn XConnectOneSync
+
+# Or run manually in foreground / background daemon mode:
+# & $ExePath up --state-dir $StateDir
+# & $ExePath up -D --state-dir $StateDir
 ```
 
 > Invite-based enrollment also works on all platforms:
@@ -106,7 +141,9 @@ docker run --cap-add=NET_ADMIN --device=/dev/net/tun ... \
 | `xconnect-one join [--gateway <url>] [--regenerate-device-id]` | Enroll device (persisting unique `xconnect-<os>-<host>-<8hex>` ID to `/etc/xconnect-one/device-id`) and fetch signed config |
 | `xconnect-one up [-D\|--daemon] [--log-file <path>] [--runtime=embedded\|external]` | Start overlay tunnel and supervision loop (foreground by default, or background daemon with `-D` / `--daemon`; default log `<state-dir>/runtime/xconnect-one.log`) |
 | `xconnect-one down` | Stop tunnel/background daemon and clean up interface/routes |
-| `xconnect-one status` / `diagnose` | Inspect tunnel status and runtime health |
+| `xconnect-one status` | Inspect tunnel status, local overlay IP/CIDR, TUN interface, and gateway endpoint/overlay IP |
+| `xconnect-one diagnose` | Run structured health checks across state, credentials, and embedded runtime |
+| `xconnect-one debug [--prompt\|--json] [--tail N]` | Generate a secret-redacted diagnostic report and copy-pasteable AI Agent debug prompt |
 
 ---
 
