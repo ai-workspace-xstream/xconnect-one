@@ -92,13 +92,12 @@ func (s *FileStore) Save(_ context.Context, record Record) error {
 	if err := temporary.Chmod(0o600); err != nil {
 		return fault.New(fault.CodeCredentialStorage, "secure device credential file", nil)
 	}
-	if sudoUID, sudoGID, ok := sudoInvokerUIDGID(); ok {
-		if dirInfo, statErr := os.Lstat(directory); statErr == nil {
-			if ownerUID, hasOwner := directoryOwnerUID(dirInfo); hasOwner && ownerUID == sudoUID {
-				chownToSudoInvokerIfMatching(temporaryPath, sudoUID, sudoGID)
-				if err := temporary.Chmod(0o600); err != nil {
-					return fault.New(fault.CodeCredentialStorage, "secure device credential file", nil)
-				}
+	if os.Geteuid() == 0 {
+		targetUID, targetGID, hasTarget := resolveNonRootOwnerForDir(directory, filepath.Dir(directory))
+		if hasTarget {
+			chownToSudoInvokerIfMatching(temporaryPath, targetUID, targetGID)
+			if err := temporary.Chmod(0o600); err != nil {
+				return fault.New(fault.CodeCredentialStorage, "secure device credential file", nil)
 			}
 		}
 	}
@@ -123,13 +122,36 @@ func (s *FileStore) Delete(context.Context) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil || !privateOwnedRegular(info) {
+	if err != nil || !privateOwnedRegularForStateDir(info, filepath.Dir(filepath.Dir(s.path))) {
 		return fault.New(fault.CodeCredentialStorage, "validate device credential deletion", nil)
 	}
 	if err := os.Remove(s.path); err != nil {
 		return fault.New(fault.CodeCredentialStorage, "delete device credential", nil)
 	}
 	return nil
+}
+
+func resolveNonRootOwnerForDir(dirPath, parentDir string) (uint32, int, bool) {
+	if os.Geteuid() != 0 {
+		return 0, -1, false
+	}
+	for _, candidate := range []string{dirPath, parentDir} {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		if info, err := os.Lstat(candidate); err == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid > 0 {
+				if sudoUID, sudoGID, hasSudo := sudoInvokerUIDGID(); hasSudo && stat.Uid == sudoUID {
+					return sudoUID, sudoGID, true
+				}
+				return stat.Uid, int(stat.Gid), true
+			}
+		}
+	}
+	if sudoUID, sudoGID, hasSudo := sudoInvokerUIDGID(); hasSudo && sudoUID > 0 {
+		return sudoUID, sudoGID, true
+	}
+	return 0, -1, false
 }
 
 func ensurePrivateOwnedDirectory(path string) error {
@@ -141,19 +163,30 @@ func ensurePrivateOwnedDirectory(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(parent, path, "create device credential directory", err), err)
 	}
-	if sudoUID, sudoGID, ok := sudoInvokerUIDGID(); ok {
-		if !parentExisted {
-			chownToSudoInvokerIfMatching(parent, sudoUID, sudoGID)
-		}
-		if !dirExisted {
-			chownToSudoInvokerIfMatching(path, sudoUID, sudoGID)
+	if os.Geteuid() == 0 {
+		targetUID, targetGID, hasTarget := resolveNonRootOwnerForDir("", parent)
+		if hasTarget {
+			if !parentExisted {
+				chownToSudoInvokerIfMatching(parent, targetUID, targetGID)
+			}
+			if !dirExisted {
+				chownToSudoInvokerIfMatching(path, targetUID, targetGID)
+			}
 		}
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(parent, path, "validate device credential directory", err), err)
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
+	ownerValid := ownedByCurrentUser(info)
+	if !ownerValid && os.Geteuid() == 0 {
+		if parentInfo, pErr := os.Lstat(parent); pErr == nil && parentInfo.IsDir() {
+			dirOwner, ok1 := directoryOwnerUID(info)
+			parentOwner, ok2 := directoryOwnerUID(parentInfo)
+			ownerValid = ok1 && ok2 && dirOwner == parentOwner
+		}
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 || !ownerValid {
 		return fault.New(fault.CodeCredentialStorage, describeDirectoryAccessError(parent, path, "validate device credential directory", os.ErrPermission), os.ErrPermission)
 	}
 	return nil

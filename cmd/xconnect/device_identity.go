@@ -257,7 +257,12 @@ func savePersistedWireGuardKeyPair(stateDirectory, privKey, pubKey string) error
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(stateDirectory, wireGuardKeysFile), append(raw, '\n'), 0o600)
+	path := filepath.Join(stateDirectory, wireGuardKeysFile)
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		return err
+	}
+	preserveDaemonOwnership(stateDirectory, "", path)
+	return nil
 }
 
 func generateUniqueDeviceIDWithPublicKey(wgPubKey string) string {
@@ -491,5 +496,9 @@ func savePersistedDeviceIDToStateDir(stateDirectory, deviceID string) error {
 		return err
 	}
 	path := filepath.Join(stateDirectory, deviceIDFileName)
-	return os.WriteFile(path, []byte(deviceID+"\n"), 0o600)
+	if err := os.WriteFile(path, []byte(deviceID+"\n"), 0o600); err != nil {
+		return err
+	}
+	preserveDaemonOwnership(stateDirectory, "", path)
+	return nil
 }
