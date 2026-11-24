@@ -65,8 +65,7 @@ func preserveSudoDirectoryOwnership(dir string, dirExisted bool) {
 }
 
 func preserveSudoFileOwnership(dir, filePath string) {
-	sudoUID, sudoGID, ok := sudoInvokerUIDGID()
-	if !ok {
+	if os.Geteuid() != 0 {
 		return
 	}
 	dirInfo, err := os.Lstat(dir)
@@ -74,8 +73,14 @@ func preserveSudoFileOwnership(dir, filePath string) {
 		return
 	}
 	stat, ok := dirInfo.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != sudoUID {
+	if !ok || stat.Uid == 0 {
 		return
 	}
-	_ = os.Chown(filePath, int(sudoUID), sudoGID)
+	if sudoUID, sudoGID, hasSudo := sudoInvokerUIDGID(); hasSudo {
+		if stat.Uid == sudoUID {
+			_ = os.Chown(filePath, int(sudoUID), sudoGID)
+		}
+		return
+	}
+	_ = os.Chown(filePath, int(stat.Uid), int(stat.Gid))
 }
