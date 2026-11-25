@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -137,7 +138,7 @@ func collectDebugReport(ctx context.Context, stateDir string, tailLines int, new
 		}
 	}
 
-	privileged := os.Geteuid() == 0
+	privileged := isProcessPrivileged()
 	for _, d := range diags {
 		if d.Code == "runtime_privileged" && d.Healthy {
 			privileged = true
@@ -165,7 +166,7 @@ func collectDebugReport(ctx context.Context, stateDir string, tailLines int, new
 		GitCommit:      gitCommit,
 		Platform:       runtime.GOOS,
 		Architecture:   runtime.GOARCH,
-		EffectiveUID:   os.Geteuid(),
+		EffectiveUID:   effectiveProcessUID(),
 		Privileged:     privileged,
 		RuntimeMode:    runtimeMode,
 		StateDirectory: stateDir,
@@ -208,6 +209,13 @@ func inspectLoginSession(stateDir string, now time.Time) debugSessionInfo {
 	}
 }
 
+func windowsAdminSuffix() string {
+	if runtime.GOOS == "windows" {
+		return " (Run as Administrator)"
+	}
+	return ""
+}
+
 func analyzeDebugIssues(
 	sys debugSystemInfo,
 	daemon debugDaemonInfo,
@@ -218,10 +226,14 @@ func analyzeDebugIssues(
 ) []debugIssue {
 	var issues []debugIssue
 	if statusErr != nil {
+		rec := fmt.Sprintf("Check file ownership/permissions on %s (e.g. sudo chown -R $(id -un):$(id -gn) %s).", sys.StateDirectory, sys.StateDirectory)
+		if runtime.GOOS == "windows" {
+			rec = fmt.Sprintf("Verify file permissions on %s (ensure current user has full read/write access).", sys.StateDirectory)
+		}
 		issues = append(issues, debugIssue{
 			Code:           fault.Code(statusErr),
 			Summary:        fmt.Sprintf("Failed to read overlay status: %s", formatFaultError(statusErr)),
-			Recommendation: fmt.Sprintf("Check file ownership/permissions on %s (e.g. sudo chown -R $(id -un):$(id -gn) %s).", sys.StateDirectory, sys.StateDirectory),
+			Recommendation: rec,
 		})
 	}
 	if diagErr != nil {
@@ -244,18 +256,33 @@ func analyzeDebugIssues(
 			Recommendation: "Re-enroll the device with 'xconnect-one join' (or 'xconnect-one login' if login session expired).",
 		})
 	}
-	if status.Credential.Present && !status.Runtime.Applied {
+	embeddedManifestBlocked := false
+	if !status.Runtime.Applied {
+		manifestPath := filepath.Join(sys.StateDirectory, "runtime", "embedded-active.json")
+		if _, lstatErr := os.Lstat(manifestPath); lstatErr == nil {
+			if _, readErr := os.ReadFile(manifestPath); errors.Is(readErr, os.ErrPermission) {
+				embeddedManifestBlocked = true
+				elevatedCmd := fmt.Sprintf("%sxconnect-one --state-dir %s status%s", platformElevatedCmdPrefix(), sys.StateDirectory, windowsAdminSuffix())
+				issues = append(issues, debugIssue{
+					Code:           "embedded_manifest_permission_denied",
+					Summary:        fmt.Sprintf("%s exists on disk but is unreadable by uid %d (typically held by an older service writing 0600).", manifestPath, sys.EffectiveUID),
+					Recommendation: fmt.Sprintf("Run '%s' to inspect, or update/restart the service so embedded-active.json uses readable permissions.", elevatedCmd),
+				})
+			}
+		}
+	}
+	if status.Credential.Present && !status.Runtime.Applied && !embeddedManifestBlocked {
 		issues = append(issues, debugIssue{
 			Code:           "tunnel_not_running",
 			Summary:        "Device is enrolled, but the overlay tunnel runtime is not currently active.",
-			Recommendation: fmt.Sprintf("Start the background embedded daemon with: sudo xconnect-one up -D --state-dir %s", sys.StateDirectory),
+			Recommendation: fmt.Sprintf("Start the background embedded daemon with: %sxconnect-one up -D --state-dir %s%s", platformElevatedCmdPrefix(), sys.StateDirectory, windowsAdminSuffix()),
 		})
 	}
 	if status.Generations.PolicyExpired && status.Generations.State > 0 {
 		issues = append(issues, debugIssue{
 			Code:           "policy_expired",
 			Summary:        fmt.Sprintf("Local policy generation %d is marked expired.", status.Generations.Policy),
-			Recommendation: fmt.Sprintf("Refresh signed config and policy with: sudo xconnect-one up -D --state-dir %s", sys.StateDirectory),
+			Recommendation: fmt.Sprintf("Refresh signed config and policy with: %sxconnect-one up -D --state-dir %s%s", platformElevatedCmdPrefix(), sys.StateDirectory, windowsAdminSuffix()),
 		})
 	}
 	for _, d := range diags {
@@ -301,11 +328,14 @@ func recommendDiagnosticFix(code, stateDir string) string {
 	case "last_known_state_present", "device_credential_present", "device_credential_not_expired":
 		return "Run 'xconnect-one login' and 'xconnect-one join' to enroll this device."
 	case "state_file_permissions_0600":
+		if runtime.GOOS == "windows" {
+			return fmt.Sprintf("Ensure private permissions on %s\\state.json (read/write restricted to current user/Administrators).", stateDir)
+		}
 		return fmt.Sprintf("Fix permissions with: chmod 0600 %s/state.json", stateDir)
 	case "runtime_privileged", "runtime_revision", "policy_generation":
-		return fmt.Sprintf("Start or refresh the tunnel daemon with: sudo xconnect-one up -D --state-dir %s", stateDir)
+		return fmt.Sprintf("Start or refresh the tunnel daemon with: %sxconnect-one up -D --state-dir %s%s", platformElevatedCmdPrefix(), stateDir, windowsAdminSuffix())
 	default:
-		return fmt.Sprintf("Inspect logs at %s and re-run 'sudo xconnect-one up -D --state-dir %s'.", defaultDaemonLogPath(stateDir), stateDir)
+		return fmt.Sprintf("Inspect logs at %s and re-run '%sxconnect-one up -D --state-dir %s%s'.", defaultDaemonLogPath(stateDir), platformElevatedCmdPrefix(), stateDir, windowsAdminSuffix())
 	}
 }
 
@@ -324,7 +354,7 @@ func renderDebugMarkdown(r debugReport) string {
 	fmt.Fprintf(&b, "- **Runtime Mode**: `%s` (Managed: `%v`, Core: `%s/%s`)\n", r.System.RuntimeMode, r.Status.Runtime.ManagedRuntime, valueOrNA(r.Status.Runtime.CoreID), valueOrNA(r.Status.Runtime.AdapterID))
 	fmt.Fprintf(&b, "- **State Directory**: `%s` (euid=%d, privileged=%v)\n", r.System.StateDirectory, r.System.EffectiveUID, r.System.Privileged)
 	if r.System.SystemDeviceID != "" {
-		fmt.Fprintf(&b, "- **Global Device ID (`/etc/xconnect-one/device-id`)**: `%s`\n", r.System.SystemDeviceID)
+		fmt.Fprintf(&b, "- **Global Device ID (`%s`)**: `%s`\n", resolveSystemDeviceIDPath(), r.System.SystemDeviceID)
 	}
 	fmt.Fprintf(&b, "- **Daemon Status**: running=`%v`, pid=`%d`, log=`%s`\n\n", r.Daemon.Running, r.Daemon.PID, r.Daemon.LogFile)
 
@@ -433,7 +463,7 @@ func buildAgentDebugPrompt(r debugReport) string {
 	fmt.Fprintf(&b, "### 节点与网络上下文\n")
 	fmt.Fprintf(&b, "- 版本与平台: xconnect-one %s (build %s, %s/%s), runtime=%s\n", r.System.Version, r.System.BuildNumber, r.System.Platform, r.System.Architecture, r.System.RuntimeMode)
 	fmt.Fprintf(&b, "- 状态目录: %s (euid=%d, daemon_pid=%d, daemon_running=%v)\n", r.System.StateDirectory, r.System.EffectiveUID, r.Daemon.PID, r.Daemon.Running)
-	fmt.Fprintf(&b, "- 设备标识: device_id=%s (global=/etc/xconnect-one/device-id: %s)\n", valueOrNA(r.Status.DeviceID), valueOrNA(r.System.SystemDeviceID))
+	fmt.Fprintf(&b, "- 设备标识: device_id=%s (global=%s: %s)\n", valueOrNA(r.Status.DeviceID), resolveSystemDeviceIDPath(), valueOrNA(r.System.SystemDeviceID))
 	fmt.Fprintf(&b, "- 虚拟网络: network_id=%s, joined=%v, runtime_applied=%v\n", valueOrNA(r.Status.NetworkID), r.Status.Joined, r.Status.Runtime.Applied)
 	fmt.Fprintf(&b, "- 本机 Overlay IP: %s (网卡=%s, MTU=%d, 路由 AllowedIPs=%s)\n", valueOrNA(r.Status.Address), valueOrNA(r.Status.Interface), r.Status.MTU, allowed)
 	fmt.Fprintf(&b, "- 网关信息: gateway_id=%s, gateway_overlay_ip=%s, endpoint=%s\n", gwID, gwIP, gwEndpoint)
@@ -459,8 +489,8 @@ func buildAgentDebugPrompt(r debugReport) string {
 	fmt.Fprintf(&b, "\n### 常用排查与验证命令\n")
 	fmt.Fprintf(&b, "1. 查看状态与网关/IP: `xconnect-one status --state-dir %s`\n", r.System.StateDirectory)
 	fmt.Fprintf(&b, "2. 完整诊断与提示词: `xconnect-one debug --state-dir %s`\n", r.System.StateDirectory)
-	fmt.Fprintf(&b, "3. 启动/重启后台内嵌隧道: `sudo xconnect-one up -D --state-dir %s`\n", r.System.StateDirectory)
-	fmt.Fprintf(&b, "4. 验证网关 Overlay 连通性: `ping -c 4 %s`\n", gwIP)
+	fmt.Fprintf(&b, "3. 启动/重启后台内嵌隧道: `%sxconnect-one up -D --state-dir %s%s`\n", platformElevatedCmdPrefix(), r.System.StateDirectory, windowsAdminSuffix())
+	fmt.Fprintf(&b, "4. 验证网关 Overlay 连通性: `%s`\n", platformPingCmdString(4, gwIP))
 	return strings.TrimSpace(b.String())
 }
 

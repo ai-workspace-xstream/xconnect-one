@@ -932,10 +932,57 @@ func TestEnrichedStatusAndDebugCommandOutput(t *testing.T) {
 		"10.66.0.1",
 		"ph-xconnect-gateway-01",
 		"AI Agent Debug Prompt",
-		"ping -c 4 10.66.0.1",
+		platformPingCmdString(4, "10.66.0.1"),
 	} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("debug markdown missing %q:\n%s", want, md)
 		}
+	}
+
+	// 3. Verify status --format=text and --format=markdown and --json
+	var textOut, textErr bytes.Buffer
+	if err := runWithFactories(t.Context(), []string{"status", "--state-dir", stateDir, "--format=text"}, &textOut, &textErr, http.DefaultClient,
+		func(string) overlayruntime.Interface { return fakeRT },
+		func(string) credential.Store { return creds },
+	); err != nil {
+		t.Fatalf("status text failed: %v", err)
+	}
+	textStr := textOut.String()
+	for _, want := range []string{
+		"XConnect-One Overlay Status",
+		"Joined:         true",
+		"Overlay IP:     10.66.0.7",
+		"Interface:      xconone0",
+		"ph-xconnect-gateway-01",
+	} {
+		if !strings.Contains(textStr, want) {
+			t.Fatalf("status text output missing %q:\n%s", want, textStr)
+		}
+	}
+
+	var statusMdOut, statusMdErr bytes.Buffer
+	if err := runWithFactories(t.Context(), []string{"status", "--state-dir", stateDir, "--format=markdown"}, &statusMdOut, &statusMdErr, http.DefaultClient,
+		func(string) overlayruntime.Interface { return fakeRT },
+		func(string) credential.Store { return creds },
+	); err != nil {
+		t.Fatalf("status markdown failed: %v", err)
+	}
+	if !strings.Contains(statusMdOut.String(), "# XConnect-One Overlay Status") || !strings.Contains(statusMdOut.String(), "10.66.0.7") {
+		t.Fatalf("unexpected status markdown output: %s", statusMdOut.String())
+	}
+
+	var statusJSONOut, statusJSONErr bytes.Buffer
+	if err := runWithFactories(t.Context(), []string{"status", "--state-dir", stateDir, "--json"}, &statusJSONOut, &statusJSONErr, http.DefaultClient,
+		func(string) overlayruntime.Interface { return fakeRT },
+		func(string) credential.Store { return creds },
+	); err != nil {
+		t.Fatalf("status json failed: %v", err)
+	}
+	var stJSON struct {
+		Joined    bool   `json:"joined"`
+		OverlayIP string `json:"overlay_ip"`
+	}
+	if err := json.Unmarshal(statusJSONOut.Bytes(), &stJSON); err != nil || !stJSON.Joined || stJSON.OverlayIP != "10.66.0.7" {
+		t.Fatalf("status --json decode failed: %v (%s)", err, statusJSONOut.String())
 	}
 }

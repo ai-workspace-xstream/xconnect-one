@@ -546,6 +546,10 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 		manager.WithSignedConfigV2()
 	}
 	if *watch {
+		embRT, isEmbedded := runtimeInstance.(*embedded.Runtime)
+		if isEmbedded {
+			embRT.SetInProcessHost(true)
+		}
 		if firstResult, err := manager.Sync(ctx); err != nil {
 			if fault.Code(err) == fault.CodeAuthenticationFailed || fault.Code(err) == fault.CodeAccessDenied || fault.Code(err) == fault.CodeCredentialExpired || fault.Code(err) == fault.CodeCredentialMissing || fault.Code(err) == fault.CodeNotJoined {
 				return err
@@ -554,7 +558,6 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer, httpC
 		} else {
 			_ = writeJSON(stdout, firstResult)
 		}
-		_, isEmbedded := runtimeInstance.(*embedded.Runtime)
 		return runSupervisedSyncLoop(ctx, client, stStore, runtimeInstance, manager.Sync, *interval, *foreground || isEmbedded, stdout, stderr)
 	}
 	result, err := manager.Sync(ctx)
@@ -857,6 +860,8 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer, new
 	flags := flag.NewFlagSet("xconnect status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	stateDirectory := flags.String("state-dir", defaultStateDirectory(), "local XConnect-One state directory")
+	format := flags.String("format", "json", "output format: json, text, or markdown")
+	asJSON := flags.Bool("json", false, "output status as JSON (shorthand for --format=json)")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "parse status arguments", err)
 	}
@@ -865,7 +870,100 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer, new
 	if err != nil {
 		return err
 	}
-	return writeJSON(stdout, result)
+	selectedFormat := strings.ToLower(strings.TrimSpace(*format))
+	if *asJSON {
+		selectedFormat = "json"
+	}
+	switch selectedFormat {
+	case "json":
+		return writeJSON(stdout, result)
+	case "text":
+		_, err := fmt.Fprint(stdout, renderStatusText(result, *stateDirectory))
+		return err
+	case "markdown", "md":
+		_, err := fmt.Fprint(stdout, renderStatusMarkdown(result, *stateDirectory))
+		return err
+	default:
+		return fault.New(fault.CodeInvalidInput, fmt.Sprintf("invalid --format %q (expected json, text, or markdown)", *format), nil)
+	}
+}
+
+func renderStatusText(r usecase.StatusResult, stateDir string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "XConnect-One Overlay Status\n")
+	fmt.Fprintf(&b, "---------------------------\n")
+	fmt.Fprintf(&b, "Joined:         %v\n", r.Joined)
+	if r.DeviceID != "" {
+		fmt.Fprintf(&b, "Device ID:      %s\n", r.DeviceID)
+	}
+	if r.NetworkID != "" {
+		fmt.Fprintf(&b, "Network ID:     %s\n", r.NetworkID)
+	}
+	if r.OverlayIP != "" {
+		fmt.Fprintf(&b, "Overlay IP:     %s (Address: %s)\n", r.OverlayIP, r.Address)
+	} else if r.Address != "" {
+		fmt.Fprintf(&b, "Address:        %s\n", r.Address)
+	}
+	if r.Interface != "" {
+		fmt.Fprintf(&b, "Interface:      %s (MTU: %d)\n", r.Interface, r.MTU)
+	}
+	if len(r.AllowedIPs) > 0 {
+		fmt.Fprintf(&b, "Allowed IPs:    %s\n", strings.Join(r.AllowedIPs, ", "))
+	}
+	if r.Revision != "" {
+		fmt.Fprintf(&b, "Revision:       %s\n", r.Revision)
+	}
+	if gw := r.Gateway; gw != nil {
+		fmt.Fprintf(&b, "Gateway ID:     %s\n", gw.ID)
+		if gw.OverlayIP != "" {
+			fmt.Fprintf(&b, "Gateway IP:     %s\n", gw.OverlayIP)
+		}
+		if gw.Endpoint != "" {
+			fmt.Fprintf(&b, "Gateway Host:   %s\n", gw.Endpoint)
+		}
+		if gw.Transport != "" {
+			fmt.Fprintf(&b, "Transport:      %s (mode: %s)\n", gw.Transport, valueOrNA(gw.TransportMode))
+		}
+	}
+	fmt.Fprintf(&b, "Runtime:        applied=%v, managed=%v, version=%s\n", r.Runtime.Applied, r.Runtime.ManagedRuntime, valueOrNA(r.Runtime.RuntimeVersion))
+	if r.Runtime.DaemonPID > 0 {
+		fmt.Fprintf(&b, "Daemon PID:     %d\n", r.Runtime.DaemonPID)
+	}
+	fmt.Fprintf(&b, "Credential:     present=%v, id=%s, expired=%v\n", r.Credential.Present, valueOrNA(r.Credential.CredentialID), r.Credential.Expired)
+	fmt.Fprintf(&b, "State Dir:      %s\n", stateDir)
+	return b.String()
+}
+
+func renderStatusMarkdown(r usecase.StatusResult, stateDir string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# XConnect-One Overlay Status\n\n")
+	fmt.Fprintf(&b, "| Property | Value |\n|---|---|\n")
+	fmt.Fprintf(&b, "| Joined | `%v` |\n", r.Joined)
+	fmt.Fprintf(&b, "| Device ID | `%s` |\n", valueOrNA(r.DeviceID))
+	fmt.Fprintf(&b, "| Network ID | `%s` |\n", valueOrNA(r.NetworkID))
+	fmt.Fprintf(&b, "| Overlay IP | `%s` (Address: `%s`) |\n", valueOrNA(r.OverlayIP), valueOrNA(r.Address))
+	fmt.Fprintf(&b, "| Interface | `%s` (MTU: `%d`) |\n", valueOrNA(r.Interface), r.MTU)
+	allowed := "N/A"
+	if len(r.AllowedIPs) > 0 {
+		allowed = strings.Join(r.AllowedIPs, ", ")
+	}
+	fmt.Fprintf(&b, "| Allowed IPs | `%s` |\n", allowed)
+	fmt.Fprintf(&b, "| Config Revision | `%s` |\n", valueOrNA(r.Revision))
+	if gw := r.Gateway; gw != nil {
+		fmt.Fprintf(&b, "| Gateway | `%s` (IP: `%s`, Endpoint: `%s`, Transport: `%s`) |\n",
+			valueOrNA(gw.ID), valueOrNA(gw.OverlayIP), valueOrNA(gw.Endpoint), valueOrNA(gw.Transport))
+	} else {
+		fmt.Fprintf(&b, "| Gateway | _None_ |\n")
+	}
+	fmt.Fprintf(&b, "| Runtime | applied: `%v`, managed: `%v`, version: `%s` |\n",
+		r.Runtime.Applied, r.Runtime.ManagedRuntime, valueOrNA(r.Runtime.RuntimeVersion))
+	if r.Runtime.DaemonPID > 0 {
+		fmt.Fprintf(&b, "| Daemon PID | `%d` |\n", r.Runtime.DaemonPID)
+	}
+	fmt.Fprintf(&b, "| Credential | present: `%v`, id: `%s`, expired: `%v` |\n",
+		r.Credential.Present, valueOrNA(r.Credential.CredentialID), r.Credential.Expired)
+	fmt.Fprintf(&b, "| State Directory | `%s` |\n", stateDir)
+	return b.String()
 }
 
 func runDiagnose(ctx context.Context, args []string, stdout, stderr io.Writer, newRuntime runtimeFactory, newCredentials credentialFactory) error {
