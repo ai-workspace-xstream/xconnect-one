@@ -77,7 +77,7 @@ func TestStatusAndDebugAllFormats(t *testing.T) {
 			DaemonPID:      9999,
 		},
 	}
-	creds := credential.NewFileStore(stateDir)
+	creds := &credential.MemoryStore{}
 
 	for _, format := range []string{"json", "text", "markdown"} {
 		t.Run("status_format_"+format, func(t *testing.T) {
