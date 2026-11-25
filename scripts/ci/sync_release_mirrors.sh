@@ -54,11 +54,16 @@ else
 fi
 
 if [[ -n "${DISPATCH_TOKEN:-}" ]]; then
-  curl -fsSL -X POST \
+  http_status="$(curl -sS -o /tmp/dispatch_resp.txt -w '%{http_code}' -X POST \
     -H "Accept: application/vnd.github+json" \
     -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
-    https://api.github.com/repos/ai-workspace-lab/distribution/dispatches \
-    -d "{\"event_type\":\"product-release\",\"client_payload\":{\"product\":\"${PRODUCT}\",\"tag\":\"${TAG}\",\"channel\":\"${CHANNEL}\"}}"
+    "https://api.github.com/repos/ai-workspace-lab/distribution/dispatches" \
+    -d "{\"event_type\":\"product-release\",\"client_payload\":{\"product\":\"${PRODUCT}\",\"tag\":\"${TAG}\",\"channel\":\"${CHANNEL}\"}}" || echo "000")"
+  if [[ "$http_status" != "204" && "$http_status" != "200" ]]; then
+    echo "::warning title=Distribution Dispatch::Distribution hub dispatch returned HTTP ${http_status}; release artifacts and mirrors are intact. Response: $(cat /tmp/dispatch_resp.txt 2>/dev/null || true)"
+  else
+    echo "Dispatched product-release (${PRODUCT} ${TAG}) to ai-workspace-lab/distribution"
+  fi
 else
   echo "Skipping distribution dispatch (DISPATCH_TOKEN not set)"
 fi
