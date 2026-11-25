@@ -41,12 +41,14 @@ fi
 if [[ -n "${OSS_ACCESS_KEY_ID:-}" && -n "${OSS_ACCESS_KEY_SECRET:-}" && -n "${OSS_ENDPOINT:-}" ]]; then
   OSS_BUCKET="${OSS_BUCKET:-xconnect-dl-cn-hk}"
   if ! command -v ossutil >/dev/null 2>&1; then
-    curl -fsSL https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil64 -o /usr/local/bin/ossutil
-    chmod +x /usr/local/bin/ossutil
+    curl -fsSL "https://gosspublic.alicdn.com/ossutil/1.7.19/ossutil-v1.7.19-linux-amd64.zip" -o /tmp/ossutil.zip
+    unzip -oq /tmp/ossutil.zip -d /tmp/ossutil-bin
+    chmod +x /tmp/ossutil-bin/ossutil-v1.7.19-linux-amd64/ossutil
+    export PATH="/tmp/ossutil-bin/ossutil-v1.7.19-linux-amd64:${PATH}"
   fi
   ossutil config -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET" -L EN >/dev/null
-  ossutil cp -rf "$DIST_DIR" "oss://${OSS_BUCKET}/releases/${PRODUCT}/${TAG}/" --exclude "release-matrix.json"
-  ossutil cp -rf "$DIST_DIR" "oss://${OSS_BUCKET}/releases/${PRODUCT}/latest/" --exclude "release-matrix.json"
+  ossutil cp -rf "${DIST_DIR}/" "oss://${OSS_BUCKET}/releases/${PRODUCT}/${TAG}/" --exclude "release-matrix.json"
+  ossutil cp -rf "${DIST_DIR}/" "oss://${OSS_BUCKET}/releases/${PRODUCT}/latest/" --exclude "release-matrix.json"
   ossutil cp -f "${DIST_DIR}/release-matrix.json" "oss://${OSS_BUCKET}/releases/${PRODUCT}/release-matrix.json" \
     --meta "Content-Type:application/json#Cache-Control:max-age=60"
 else
