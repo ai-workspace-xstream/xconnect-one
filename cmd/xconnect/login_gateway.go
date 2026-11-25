@@ -1006,11 +1006,24 @@ func runUpWithDependencies(ctx context.Context, args []string, stdout, stderr io
 		}
 		return writeJSON(stdout, res)
 	}
-	if _, isEmbedded := runtimeInstance.(*embedded.Runtime); isEmbedded && !*watch {
-		// Embedded runtime hosts wireguard-go and xray-core inside this process,
-		// so 'up' stays supervised in foreground mode unless run externally.
-		*watch = true
-		*foreground = true
+	if embRT, isEmbedded := runtimeInstance.(*embedded.Runtime); isEmbedded {
+		if !isDaemonChild {
+			if pid, alive := embedded.ActiveDaemonPID(*stateDirectory); alive && pid != os.Getpid() {
+				_, _ = fmt.Fprintf(stderr, "xconnect: embedded overlay daemon is already running (pid=%d); check 'xconnect-one status' or stop it first with 'sudo xconnect-one down'\n", pid)
+				statusRes, statusErr := usecase.StatusWithCredential(ctx, stStore, runtimeInstance, credentials)
+				if statusErr != nil {
+					return statusErr
+				}
+				return writeJSON(stdout, statusRes)
+			}
+		}
+		embRT.SetInProcessHost(true)
+		if !*watch {
+			// Embedded runtime hosts wireguard-go and xray-core inside this process,
+			// so 'up' stays supervised in foreground mode unless run externally.
+			*watch = true
+			*foreground = true
+		}
 	}
 	manager := usecase.NewDeviceSessionManager(client, stStore, credentials, runtimeInstance).WithSignedConfigV2()
 	readyFile := strings.TrimSpace(os.Getenv(daemonReadyFileEnv))

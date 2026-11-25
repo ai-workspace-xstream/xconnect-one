@@ -39,6 +39,7 @@ type Runtime struct {
 	privilegedFn  func() bool
 	xray          *xrayHost
 	wg            *wgHost
+	inProcessHost bool
 	activeCfg     *model.Config
 	activePrivKey string
 	applied       bool
@@ -55,6 +56,16 @@ func New(stateDir string) *Runtime {
 		xray:         newXrayHost(),
 		wg:           newWGHost(),
 	}
+}
+
+// SetInProcessHost configures whether this Runtime instance is hosting the
+// tunnel inside the current process (e.g. `up --foreground` or `sync --watch`).
+// When enabled, Status ignores other processes' embedded-active.json manifests
+// so an in-process host never mistakes a stale/foreign daemon for its own state.
+func (r *Runtime) SetInProcessHost(v bool) {
+	r.mu.Lock()
+	r.inProcessHost = v
+	r.mu.Unlock()
 }
 
 func (r *Runtime) Apply(ctx context.Context, request overlayruntime.ApplyRequest) (overlayruntime.ApplyResult, error) {
@@ -221,9 +232,26 @@ func (r *Runtime) Status(_ context.Context) (overlayruntime.Status, error) {
 		r.mu.Unlock()
 		return status, nil
 	}
+	inProcessHost := r.inProcessHost
 	r.mu.Unlock()
 
-	if manifest, ok := r.readActiveManifest(); ok && isProcessAlive(manifest.PID) {
+	if !inProcessHost {
+		if manifest, ok := r.readActiveManifest(); ok && isProcessAlive(manifest.PID) {
+			return overlayruntime.Status{
+				Available:      true,
+				Applied:        true,
+				ManagedRuntime: true,
+				RuntimeVersion: "embedded",
+				Revision:       manifest.Revision,
+				CoreID:         manifest.CoreID,
+				AdapterID:      manifest.AdapterID,
+				Interface:      manifest.Interface,
+				Address:        manifest.Address,
+				LocalPort:      manifest.LocalPort,
+				DaemonPID:      manifest.PID,
+			}, nil
+		}
+	} else if manifest, ok := r.readActiveManifest(); ok && manifest.PID == os.Getpid() && isProcessAlive(manifest.PID) {
 		return overlayruntime.Status{
 			Available:      true,
 			Applied:        true,
@@ -346,7 +374,7 @@ func (r *Runtime) writeActiveManifestLocked(cfg model.Config) error {
 		return err
 	}
 	tmp := manifestPath + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
 	}
 	preserveRuntimeOwnership(r.stateDir, runtimeDir, tmp)
@@ -358,8 +386,21 @@ func (r *Runtime) writeActiveManifestLocked(cfg model.Config) error {
 	return nil
 }
 
-func (r *Runtime) readActiveManifest() (activeManifest, bool) {
-	manifestPath := r.activeManifestPath()
+// ActiveDaemonPID inspects `<stateDir>/runtime/embedded-active.json` and
+// returns the active embedded daemon PID if that process is still alive.
+func ActiveDaemonPID(stateDir string) (int, bool) {
+	trimmed := strings.TrimSpace(stateDir)
+	if trimmed == "" {
+		return 0, false
+	}
+	manifest, ok := readActiveManifestFile(filepath.Join(trimmed, "runtime", "embedded-active.json"))
+	if !ok || !isProcessAlive(manifest.PID) {
+		return 0, false
+	}
+	return manifest.PID, true
+}
+
+func readActiveManifestFile(manifestPath string) (activeManifest, bool) {
 	if manifestPath == "" {
 		return activeManifest{}, false
 	}
@@ -372,6 +413,10 @@ func (r *Runtime) readActiveManifest() (activeManifest, bool) {
 		return activeManifest{}, false
 	}
 	return m, true
+}
+
+func (r *Runtime) readActiveManifest() (activeManifest, bool) {
+	return readActiveManifestFile(r.activeManifestPath())
 }
 
 func (r *Runtime) removeActiveManifest() {

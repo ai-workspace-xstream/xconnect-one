@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/fault"
+	"github.com/ai-workspace-xstream/XConnect-One/overlay/runtime/embedded"
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/usecase"
 )
 
@@ -226,6 +227,17 @@ func spawnDaemonUp(ctx context.Context, opts daemonUpOptions) (daemonStartResult
 			return daemonStartResult{}, fault.New(fault.CodeRuntimePermission, "read daemon pid", err)
 		}
 		_ = removeDaemonPID(opts.StateDir)
+	}
+	if pid, alive := embedded.ActiveDaemonPID(opts.StateDir); alive && pid > 0 {
+		return daemonStartResult{
+			Daemon:         true,
+			AlreadyRunning: true,
+			Ready:          true,
+			PID:            pid,
+			StateDir:       opts.StateDir,
+			LogFile:        logPath,
+			RuntimeMode:    opts.RuntimeMode,
+		}, nil
 	}
 
 	exePath := strings.TrimSpace(opts.Executable)

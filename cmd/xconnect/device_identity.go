@@ -330,23 +330,6 @@ func computeUniqueDeviceFingerprint(wgPubKey string) string {
 	return hex.EncodeToString(sum[:4]) // 8 hex characters (e.g. 8f3a1c9d)
 }
 
-func readOSMachineID() string {
-	paths := []string{
-		"/etc/machine-id",
-		"/var/lib/dbus/machine-id",
-		"/etc/hostid",
-	}
-	for _, p := range paths {
-		raw, err := os.ReadFile(p)
-		if err == nil {
-			if id := strings.TrimSpace(string(raw)); id != "" {
-				return id
-			}
-		}
-	}
-	return ""
-}
-
 func firstPhysicalMAC() string {
 	macs := collectPhysicalMACs()
 	if len(macs) == 0 {
@@ -420,14 +403,14 @@ func resolveSystemDeviceIDPath() string {
 	if override := strings.TrimSpace(os.Getenv("XCONNECT_SYSTEM_DEVICE_ID_PATH")); override != "" {
 		return override
 	}
-	return systemDeviceIDPath
+	return defaultSystemDeviceIDPath()
 }
 
 func canUseSystemDeviceIDPath() bool {
 	if strings.TrimSpace(os.Getenv("XCONNECT_SYSTEM_DEVICE_ID_PATH")) != "" {
 		return true
 	}
-	if os.Geteuid() == 0 {
+	if isProcessPrivileged() {
 		return true
 	}
 	path := resolveSystemDeviceIDPath()
