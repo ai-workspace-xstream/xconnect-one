@@ -1123,10 +1123,13 @@ func renderXrayConfig(config model.Config) ([]byte, error) {
 					"path": config.Transport.XHTTPPath(),
 					"mode": config.Transport.XHTTPMode(),
 					"host": config.Transport.XHTTPHost(),
+					"xmux": map[string]any{
+						"hKeepAlivePeriod": 10,
+					},
 				},
 				"sockopt": map[string]any{
-					"tcpKeepAliveIdle":     30,
-					"tcpKeepAliveInterval": 15,
+					"tcpKeepAliveIdle":     10,
+					"tcpKeepAliveInterval": 5,
 				},
 			},
 		}},

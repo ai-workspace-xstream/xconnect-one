@@ -591,6 +591,7 @@ func TestRenderedProfilesContainOnlySupportedXrayRuntime(t *testing.T) {
 	wireGuard := renderWireGuardConfig(request.Config, request.WireGuardPrivateKey)
 	if !bytes.Contains(xray, []byte(`"protocol": "vless"`)) || !bytes.Contains(xray, []byte(`"network": "xhttp"`)) ||
 		!bytes.Contains(xray, []byte(`"path": "/xconnect"`)) || !bytes.Contains(xray, []byte(`"mode": "auto"`)) ||
+		!bytes.Contains(xray, []byte(`"hKeepAlivePeriod": 10`)) || !bytes.Contains(xray, []byte(`"tcpKeepAliveIdle": 10`)) ||
 		!bytes.Contains(xray, []byte(`"packetEncoding": "xudp"`)) || bytes.Contains(bytes.ToLower(xray), []byte("sing-box")) {
 		t.Fatalf("unexpected Xray profile: %s", xray)
 	}

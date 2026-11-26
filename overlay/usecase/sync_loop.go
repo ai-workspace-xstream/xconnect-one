@@ -15,9 +15,9 @@ const (
 	MinSyncInterval           = 15 * time.Second
 	MaxSyncInterval           = 100 * time.Second
 	defaultStaleHandshakeWait = 180 * time.Second
-	defaultTxStallWait        = 30 * time.Second
+	defaultTxStallWait        = 12 * time.Second
 	defaultPolicyRefreshLead  = 2 * time.Minute
-	defaultLevel1Cooldown     = 20 * time.Second
+	defaultLevel1Cooldown     = 10 * time.Second
 	defaultLevel2EscalateWait = 15 * time.Second
 	defaultShutdownTimeout    = 8 * time.Second
 )

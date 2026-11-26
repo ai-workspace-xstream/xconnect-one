@@ -16,7 +16,7 @@ const (
 	NetworkEventChanged NetworkEventKind = "network_changed"
 	NetworkEventWake    NetworkEventKind = "system_wake"
 
-	defaultNetworkDebounce    = 1500 * time.Millisecond
+	defaultNetworkDebounce    = 300 * time.Millisecond
 	defaultWakeTickInterval   = 2 * time.Second
 	defaultWakeJumpThreshold  = 5 * time.Second
 	defaultPollInterval       = 2 * time.Second
