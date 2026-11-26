@@ -226,13 +226,13 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 
 	if len(positionalArgs) == 0 {
-		return fault.New(fault.CodeInvalidInput, "expected login, logout, gateway, register, join, sync, up, down, leave, status, diagnose, debug, runtime, credential, admin, policy, or version", nil)
+		return fault.New(fault.CodeInvalidInput, "expected login, logout, accelerate, gateway, register, join, sync, up, down, leave, status, diagnose, debug, runtime, credential, admin, policy, or version", nil)
 	}
 	cmd := positionalArgs[0]
 	subArgs := positionalArgs[1:]
 	if len(leadingStateFlags) > 0 {
 		switch cmd {
-		case "gateway", "gateways", "credential", "runtime", "admin", "policy":
+		case "accelerate", "gateway", "gateways", "credential", "runtime", "admin", "policy":
 			subArgs = injectLeadingFlagsAfterAction(subArgs, leadingStateFlags)
 		default:
 			merged := make([]string, 0, len(leadingStateFlags)+len(subArgs))
@@ -246,6 +246,8 @@ func runWithFactories(ctx context.Context, args []string, stdout, stderr io.Writ
 		return runVersion(subArgs, stdout, stderr)
 	case "login":
 		return runLogin(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
+	case "accelerate":
+		return runAccelerate(ctx, subArgs, stdout, stderr, httpClient, newRuntime, newCredentials)
 	case "logout":
 		return runLogout(ctx, subArgs, stdout, stderr)
 	case "gateway", "gateways":

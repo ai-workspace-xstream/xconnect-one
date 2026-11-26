@@ -46,6 +46,28 @@ sudo xconnect-one diagnose
 sudo xconnect-one down
 ```
 
+## 独立加速 | Linux VPS
+
+```bash
+xconnect accelerate login
+xconnect accelerate join
+sudo xconnect accelerate up
+# 在另一个终端
+sudo xconnect accelerate status
+sudo xconnect accelerate down
+```
+
+已有 One 登录会话可直接运行 `accelerate join`。加速默认作用于发起 `sudo` 的普通用户。
+root 登录的 VPS 需要指定运行应用的普通用户 UID，例如
+`xconnect accelerate up --uid 1001`。`accelerate join` 会列出账号授权的加速节点，也可用 `--node <ID>` 直接选择。节点选择与 One 的 Gateway 独立。
+用 `--state-dir` 指定已有的登录目录。支持 VLESS/TLS 的 TCP 和 XHTTP 节点。
+`up` 在前台运行，Ctrl+C 也可停止。
+
+加速使用独立的 TUN。现有路由规则和主路由表中比默认路由更具体的路由优先，
+因此 One 私网和 LAN 保留原有路径。目标用户剩余的公网 IPv4/IPv6 流量进入加速，
+系统 DNS 设置和其他用户的路由保持原样。如果现有 VPN 已接管公网流量，
+其优先级更高的规则仍生效。运行主机需提供 `/dev/net/tun` 和 Linux 网络管理权限。
+
 ## Downloads
 
 <!-- SUPPORT_MATRIX:START -->

@@ -115,8 +115,16 @@ func handleRuntimePermissionError(ctx context.Context, subcommand, stateDir stri
 }
 
 func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
+	return runLoginFor(ctx, args, stdout, stderr, httpClient, newRuntime, newCredentials, false)
+}
+
+func runLoginFor(ctx context.Context, args []string, stdout, stderr io.Writer, httpClient *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory, acceleration bool) error {
 	defaultStateDir, primaryStateDir, fallbackReason := resolveDefaultStateDirectory()
-	flags := flag.NewFlagSet("xconnect login", flag.ContinueOnError)
+	command := "xconnect login"
+	if acceleration {
+		command = "xconnect accelerate login"
+	}
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	server := flags.String("server", defaultAccountsServer, "accounts service base URL")
 	email := flags.String("email", "", "user email or username for credential login")
@@ -141,13 +149,18 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 		return fault.New(fault.CodeInvalidInput, "unexpected positional arguments for login", nil)
 	}
 
+	if acceleration && (*gatewayTarget != "" || *deviceID != "" || *deviceName != "") {
+		return fault.New(fault.CodeInvalidInput, "select an acceleration node with 'xconnect accelerate join'", nil)
+	}
 	explicitFlags := make(map[string]bool)
 	flags.Visit(func(f *flag.Flag) {
 		explicitFlags[f.Name] = true
 	})
 
 	*stateDirectory = expandUserPath(*stateDirectory)
-	*deviceID = resolveOrCreateDeviceID(*stateDirectory, *deviceID, explicitFlags["device-id"])
+	if !acceleration {
+		*deviceID = resolveOrCreateDeviceID(*stateDirectory, *deviceID, explicitFlags["device-id"])
+	}
 
 	if *status {
 		sess, err := credential.LoadUserSession(*stateDirectory)
@@ -245,6 +258,8 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, http
 			return err
 		}
 		fmt.Fprintf(stdout, "Selected gateway %s (%s) on network %s\n", enrolled.Gateway.GatewayID, enrolled.Gateway.EndpointHost, enrolled.Gateway.NetworkID)
+	} else if acceleration {
+		fmt.Fprintln(stdout, "Next: run 'xconnect accelerate join'.")
 	} else {
 		fmt.Fprintln(stdout, "Next: run 'xconnect-one join' to authorize a gateway and network.")
 	}
