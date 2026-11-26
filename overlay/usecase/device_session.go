@@ -106,7 +106,7 @@ func (m *DeviceSessionManager) Sync(ctx context.Context) (SyncResult, error) {
 	if err != nil {
 		return SyncResult{}, handleDeviceSessionError(m.state, err)
 	}
-	if err := signedconfig.Verify(config, record.SigningKeys, m.now()); err != nil {
+	if err := signedconfig.Verify(config, verifyKeysForSync(record.SigningKeys, enrollment.SigningKeys, m.now()), m.now()); err != nil {
 		return SyncResult{}, err
 	}
 	if config.DeviceID != record.DeviceID || config.NetworkID != record.NetworkID {
@@ -329,6 +329,29 @@ func (m *DeviceSessionManager) loadBoundCredential(ctx context.Context, controll
 
 func exactSessionScope(values []string) bool {
 	return len(values) == 2 && (values[0] == "overlay:config:read" && values[1] == "overlay:config:ack" || values[1] == "overlay:config:read" && values[0] == "overlay:config:ack")
+}
+
+func verifyKeysForSync(trusted, candidate signedconfig.SigningKeys, now time.Time) signedconfig.SigningKeys {
+	if len(candidate.Keys) > 0 && candidate.Validate() == nil && signingKeyRingsOverlap(trusted, candidate, now) {
+		return candidate
+	}
+	return trusted
+}
+
+func signingKeyRingsOverlap(trusted, candidate signedconfig.SigningKeys, now time.Time) bool {
+	for _, existing := range trusted.Keys {
+		for _, next := range candidate.Keys {
+			if existing.KeyID == next.KeyID && existing.PublicKey == next.PublicKey && signingKeyUsable(existing, now) && signingKeyUsable(next, now) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func signingKeyUsable(key signedconfig.SigningKey, now time.Time) bool {
+	now = now.UTC()
+	return !key.NotBefore.Time.After(now.Add(30*time.Second)) && (key.NotAfter == nil || key.NotAfter.Time.After(now))
 }
 
 func handleDeviceSessionError(store *state.Store, err error) error {

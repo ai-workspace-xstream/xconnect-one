@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -116,6 +117,62 @@ func TestDeviceSyncFailedConfigCannotPoisonDurableSigningKeys(t *testing.T) {
 	stored, err := credentials.Load(t.Context())
 	if err != nil || !reflect.DeepEqual(stored.SigningKeys, original.SigningKeys) {
 		t.Fatalf("durable trust changed on failed config: stored=%#v original=%#v err=%v", stored.SigningKeys, original.SigningKeys, err)
+	}
+}
+
+func TestDeviceSyncRotatesSigningKeysWhenSignedConfigUsesNewCurrentKey(t *testing.T) {
+	controlPlane := newInviteControlPlaneFixture(t)
+	now := controlPlane.config.IssuedAt.Time.Add(time.Minute)
+
+	newPub, newPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousUntil := signedconfig.CanonicalTime{Time: now.Add(24 * time.Hour)}
+	old := controlPlane.keys.Keys[0]
+	old.Status = "previous"
+	old.NotAfter = &previousUntil
+
+	newKey := signedconfig.SigningKey{
+		KeyID:     "signing_key_rotated",
+		Algorithm: signedconfig.SignatureEd25519,
+		PublicKey: base64.StdEncoding.EncodeToString(newPub),
+		Status:    "current",
+		NotBefore: signedconfig.CanonicalTime{Time: now.Add(-time.Hour)},
+	}
+	controlPlane.sessionKeys = []signedconfig.SigningKey{newKey, old}
+
+	controlPlane.config.Signature.KeyID = newKey.KeyID
+	payload, err := controlPlane.config.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPlane.config.Signature.Value = base64.StdEncoding.EncodeToString(ed25519.Sign(newPriv, payload))
+
+	stateStore := state.NewStore(t.TempDir())
+	if err := stateStore.SaveLastKnown(lifecycleLastKnown()); err != nil {
+		t.Fatal(err)
+	}
+	credentials := &credential.MemoryStore{}
+	original := durableRecord(t, controlPlane.keys, now)
+	if err := credentials.Save(t.Context(), original); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeFake := &overlayruntime.Fake{}
+	manager := usecase.NewDeviceSessionManager(controlPlane, stateStore, credentials, runtimeFake).WithClock(func() time.Time { return now })
+	if _, err := manager.Sync(t.Context()); err != nil {
+		t.Fatalf("sync with rotated current key failed: %v", err)
+	}
+	if runtimeFake.ApplyCalls != 1 || controlPlane.enrollmentAckCalls != 1 {
+		t.Fatalf("unexpected sync calls apply=%d ack=%d", runtimeFake.ApplyCalls, controlPlane.enrollmentAckCalls)
+	}
+	stored, err := credentials.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.SigningKeys, signedconfig.SigningKeys{Keys: controlPlane.sessionKeys}) {
+		t.Fatalf("expected durable signing_keys updated to rotated dual-key ring, got %#v", stored.SigningKeys)
 	}
 }
 
