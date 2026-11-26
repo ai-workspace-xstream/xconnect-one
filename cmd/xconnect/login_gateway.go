@@ -762,6 +762,14 @@ func enrollResolvedGateway(
 		return enrolledGatewayResult{}, err
 	}
 
+	// Clear stale policy floor, signing key cache, enrollment secret, and any
+	// interrupted join checkpoint so re-enrolling an already-bound node cleanly
+	// adopts fresh credentials and signing keys without policy_replay or lock drift.
+	_ = stStore.ClearEnrollmentSecret()
+	_ = stStore.ClearCheckpoint()
+	_ = os.Remove(stStore.PolicyStatePath())
+	_ = os.Remove(stStore.SigningKeyCachePath())
+
 	_, _ = client.AckEnrollmentSignedConfig(ctx, enrollResp.EnrollmentToken, controlplane.SignedConfigAckRequest{
 		Generation: signedCfg.Generation,
 		ConfigID:   signedCfg.ConfigID,
