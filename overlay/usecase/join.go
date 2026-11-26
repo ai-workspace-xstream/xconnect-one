@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -139,23 +140,54 @@ func (j *Joiner) Join(ctx context.Context, request JoinRequest) (JoinResult, err
 			if requestedNode := strings.TrimSpace(request.NodeID); requestedNode != "" && requestedNode != lastKnown.NodeID {
 				return JoinResult{}, fault.New(fault.CodeStateConflict, "join existing device", nil)
 			}
-			lastContract := ConfigContract(lastKnown.ConfigContract)
-			if lastContract == "" {
-				lastContract = ConfigContractLegacy
-			}
-			if lastContract == ConfigContractSigned && j.contract == ConfigContractLegacy {
-				return JoinResult{}, fault.New(fault.CodeConfigDowngradeBlocked, "join signed device with legacy config", nil)
-			}
-			if lastContract == ConfigContractSigned || j.contract == ConfigContractLegacy {
-				if lastContract == ConfigContractSigned {
-					if err := j.store.ClearEnrollmentSecret(); err != nil {
-						return JoinResult{}, err
-					}
+			// When a fresh join invite token is explicitly provided for an already-bound
+			// device (e.g. credential rotation or signing-key recovery), re-exchange
+			// idempotently while reusing the persisted WireGuard keypair and clearing
+			// stale policy floor / signing-key cache / enrollment state.
+			if strings.TrimSpace(request.JoinToken) != "" {
+				_ = j.store.ClearEnrollmentSecret()
+				_ = j.store.ClearCheckpoint()
+				_ = os.Remove(j.store.PolicyStatePath())
+				_ = os.Remove(j.store.SigningKeyCachePath())
+				rejoinCheckpoint := state.Checkpoint{
+					Server:              request.Server,
+					DeviceID:            request.DeviceID,
+					DeviceName:          strings.TrimSpace(request.DeviceName),
+					Platform:            strings.TrimSpace(request.Platform),
+					Hostname:            strings.TrimSpace(request.Hostname),
+					NetworkID:           strings.TrimSpace(request.NetworkID),
+					NodeID:              strings.TrimSpace(request.NodeID),
+					InviteEnrollment:    true,
+					WireGuardPrivateKey: lastKnown.WireGuardPrivateKey,
+					WireGuardPublicKey:  lastKnown.WireGuardPublicKey,
+					Phase:               state.PhaseStarted,
+					UpdatedAt:           j.now().UTC(),
 				}
-				return j.recoverLastKnown(ctx, lastKnown)
-			}
-			if err := j.seedMigrationCheckpoint(lastKnown); err != nil {
-				return JoinResult{}, err
+				if rejoinCheckpoint.NetworkID == "" {
+					rejoinCheckpoint.NetworkID = lastKnown.NetworkID
+				}
+				if err := j.store.SaveCheckpoint(rejoinCheckpoint); err != nil {
+					return JoinResult{}, err
+				}
+			} else {
+				lastContract := ConfigContract(lastKnown.ConfigContract)
+				if lastContract == "" {
+					lastContract = ConfigContractLegacy
+				}
+				if lastContract == ConfigContractSigned && j.contract == ConfigContractLegacy {
+					return JoinResult{}, fault.New(fault.CodeConfigDowngradeBlocked, "join signed device with legacy config", nil)
+				}
+				if lastContract == ConfigContractSigned || j.contract == ConfigContractLegacy {
+					if lastContract == ConfigContractSigned {
+						if err := j.store.ClearEnrollmentSecret(); err != nil {
+							return JoinResult{}, err
+						}
+					}
+					return j.recoverLastKnown(ctx, lastKnown)
+				}
+				if err := j.seedMigrationCheckpoint(lastKnown); err != nil {
+					return JoinResult{}, err
+				}
 			}
 		}
 	} else if !errors.Is(err, state.ErrNotFound) {
