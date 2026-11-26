@@ -150,7 +150,7 @@ func runLoginFor(ctx context.Context, args []string, stdout, stderr io.Writer, h
 	}
 
 	if acceleration && (*gatewayTarget != "" || *deviceID != "" || *deviceName != "") {
-		return fault.New(fault.CodeInvalidInput, "select the acceleration gateway with 'xconnect accelerate up --gateway'", nil)
+		return fault.New(fault.CodeInvalidInput, "select an acceleration node with 'xconnect accelerate join'", nil)
 	}
 	explicitFlags := make(map[string]bool)
 	flags.Visit(func(f *flag.Flag) {
@@ -259,7 +259,7 @@ func runLoginFor(ctx context.Context, args []string, stdout, stderr io.Writer, h
 		}
 		fmt.Fprintf(stdout, "Selected gateway %s (%s) on network %s\n", enrolled.Gateway.GatewayID, enrolled.Gateway.EndpointHost, enrolled.Gateway.NetworkID)
 	} else if acceleration {
-		fmt.Fprintln(stdout, "Next: run 'sudo xconnect accelerate up'.")
+		fmt.Fprintln(stdout, "Next: run 'xconnect accelerate join'.")
 	} else {
 		fmt.Fprintln(stdout, "Next: run 'xconnect-one join' to authorize a gateway and network.")
 	}

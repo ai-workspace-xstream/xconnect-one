@@ -19,25 +19,27 @@ import (
 
 func runAccelerate(ctx context.Context, args []string, stdout, stderr io.Writer, client *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "Usage: xconnect accelerate {login|up|status|down}")
-		fmt.Fprintln(stdout, "On Linux: log in, then run sudo xconnect accelerate up. On a root shell, add --uid <non-root-user-id>.")
+		fmt.Fprintln(stdout, "Usage: xconnect accelerate {login|join|up|status|down}")
+		fmt.Fprintln(stdout, "On Linux: log in, join an acceleration node, then run sudo xconnect accelerate up. On a root shell, add --uid <non-root-user-id>.")
 		return nil
 	}
 	action, args := args[0], args[1:]
 	switch action {
 	case "login":
 		return runLoginFor(ctx, args, stdout, stderr, client, newRuntime, newCredentials, true)
-	case "up", "status", "down":
+	case "join", "up", "status", "down":
 	default:
-		return fault.New(fault.CodeInvalidInput, "expected accelerate login, up, status, or down", nil)
+		return fault.New(fault.CodeInvalidInput, "expected accelerate login, join, up, status, or down", nil)
 	}
 	flags := flag.NewFlagSet("xconnect accelerate "+action, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	stateDir := flags.String("state-dir", defaultStateDirectory(), "XConnect login state (shared with One)")
-	var gateway, userID *string
+	var nodeSelector, userID *string
 	var foreground *bool
+	if action == "join" {
+		nodeSelector = flags.String("node", "", "acceleration node ID, name or host")
+	}
 	if action == "up" {
-		gateway = flags.String("gateway", "", "acceleration node ID, name or host (default: first supported node)")
 		userID = flags.String("uid", "", "Linux UID to accelerate (default: sudo invoker)")
 		foreground = flags.Bool("foreground", true, "run in the foreground")
 	}
@@ -53,6 +55,10 @@ func runAccelerate(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if runtime.GOOS != "linux" {
 		return errors.New("TUN acceleration is available on Linux")
 	}
+	dir := expandUserPath(*stateDir)
+	if action == "join" {
+		return joinAcceleration(ctx, client, dir, strings.TrimSpace(*nodeSelector), os.Stdin, stdout, isTerminal(os.Stdin))
+	}
 	if os.Geteuid() != 0 {
 		return errors.New("use sudo to manage Linux TUN acceleration")
 	}
@@ -66,13 +72,16 @@ func runAccelerate(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if !ok {
 		return fault.New(fault.CodeInvalidInput, "set --uid to the non-root Linux UID to accelerate", nil)
 	}
-	dir := expandUserPath(*stateDir)
 	return accelerate.Run(ctx, uid, func(ctx context.Context) ([]byte, error) {
 		session, err := credential.LoadUserSession(dir)
 		if err != nil {
 			return nil, errors.New("cannot load login session; run xconnect accelerate login")
 		}
-		return accelerate.Profile(ctx, client, session, strings.TrimSpace(*gateway))
+		nodeKey, err := accelerate.LoadSelection(dir, session)
+		if err != nil {
+			return nil, err
+		}
+		return accelerate.Profile(ctx, client, session, nodeKey)
 	}, stdout)
 }
 
@@ -83,4 +92,43 @@ func accelerationUID(override string) (uint32, bool) {
 	}
 	uid, _, hasSudo := credential.ResolveSudoInvoker()
 	return uid, hasSudo && uid > 0 && uid < 1<<32-1
+}
+
+func joinAcceleration(ctx context.Context, client *http.Client, dir, selector string, input io.Reader, output io.Writer, interactive bool) error {
+	session, err := credential.LoadUserSession(dir)
+	if err != nil {
+		return errors.New("cannot load login session; run xconnect accelerate login")
+	}
+	nodes, err := accelerate.Nodes(ctx, client, session)
+	if err != nil {
+		return err
+	}
+	if len(nodes) == 0 {
+		return errors.New("no authorized VLESS/TLS acceleration nodes")
+	}
+	exact := false
+	if selector == "" {
+		for i, node := range nodes {
+			fmt.Fprintf(output, "%d. %q (ID: %q)\n", i+1, node.Name, node.Key)
+		}
+		if !interactive {
+			return errors.New("select a node with xconnect accelerate join --node <ID>")
+		}
+		fmt.Fprint(output, "Select node number: ")
+		line, err := readLine(input)
+		number, parseErr := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || parseErr != nil || number < 1 || number > len(nodes) {
+			return errors.New("invalid acceleration node number")
+		}
+		selector, exact = nodes[number-1].Key, true
+	}
+	selected, err := accelerate.Select(nodes, selector, exact)
+	if err != nil {
+		return err
+	}
+	if err := accelerate.SaveSelection(dir, session, selected); err != nil {
+		return err
+	}
+	fmt.Fprintf(output, "Selected acceleration node %q. Next: sudo xconnect accelerate up.\n", selected.Name)
+	return nil
 }

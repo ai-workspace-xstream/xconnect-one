@@ -44,11 +44,11 @@ func TestProfileUsesAccountsSessionAndSelectsManagedNode(t *testing.T) {
 
 func TestProfileRejectsPlaintextAndAmbiguousSelection(t *testing.T) {
 	bad := []node{{ID: "bad", VLESS: "vless://test@example.org:443?security=none"}}
-	if _, err := selectProfile(bad, ""); err == nil {
+	if len(supportedNodes(bad)) != 0 {
 		t.Fatal("accepted plaintext profile")
 	}
 	n := node{ID: "same", VLESS: "vless://test@example.org:443?security=tls"}
-	if _, err := selectProfile([]node{n, n}, "same"); err == nil {
+	if _, err := Select(supportedNodes([]node{n, n}), "same", true); err == nil {
 		t.Fatal("accepted an ambiguous gateway")
 	}
 }

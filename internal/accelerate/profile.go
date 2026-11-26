@@ -28,7 +28,7 @@ type node struct {
 	URI     string `json:"uri"`
 }
 
-func Profile(ctx context.Context, client *http.Client, session credential.UserSession, gateway string) ([]byte, error) {
+func Nodes(ctx context.Context, client *http.Client, session credential.UserSession) ([]Node, error) {
 	if session.AccessToken == "" || (!session.ExpiresAt.IsZero() && !time.Now().Before(session.ExpiresAt)) {
 		return nil, errors.New("login session expired; run xconnect accelerate login")
 	}
@@ -68,40 +68,77 @@ func Profile(ctx context.Context, client *http.Client, session credential.UserSe
 	if err != nil || len(body) > maxBytes || json.Unmarshal(body, &nodes) != nil {
 		return nil, errors.New("invalid Accounts node response")
 	}
-	return selectProfile(nodes, gateway)
+	return supportedNodes(nodes), nil
 }
 
-func selectProfile(nodes []node, gateway string) ([]byte, error) {
-	var selected []byte
+// Node exposes only the metadata needed for selection. The profile holds the
+// authorized credentials in memory and is never stored with the selection.
+type Node struct {
+	Key, Name, Host string
+	profile         []byte
+}
+
+func supportedNodes(nodes []node) []Node {
+	var result []Node
 	for _, n := range nodes {
+		key := strings.TrimSpace(n.ID)
+		if key == "" {
+			key = strings.TrimSpace(n.Address)
+		}
+		if key == "" {
+			continue
+		}
+		name := strings.TrimSpace(n.Name)
+		if name == "" {
+			name = strings.TrimSpace(n.Display)
+		}
+		if name == "" {
+			name = key
+		}
 		for _, share := range []string{n.XHTTP, n.TCP, n.VLESS, n.URI} {
 			u, err := url.Parse(strings.TrimSpace(share))
 			if err != nil || u.Scheme != "vless" {
-				continue
-			}
-			if gateway != "" && gateway != n.ID && gateway != n.Address &&
-				!strings.EqualFold(gateway, n.Name) && !strings.EqualFold(gateway, n.Display) &&
-				!strings.EqualFold(gateway, u.Hostname()) && !strings.EqualFold(gateway, u.Host) {
 				continue
 			}
 			profile, err := buildProfile(u)
 			if err != nil {
 				continue
 			}
-			if gateway == "" {
-				return profile, nil
-			}
-			if selected != nil {
-				return nil, errors.New("gateway matches multiple acceleration nodes; use the exact node ID")
-			}
-			selected = profile
+			result = append(result, Node{Key: key, Name: name, Host: u.Hostname(), profile: profile})
 			break
 		}
 	}
-	if selected == nil {
-		return nil, errors.New("no authorized VLESS/TLS acceleration node matches; check the account and gateway")
+	return result
+}
+
+func Select(nodes []Node, selector string, exact bool) (Node, error) {
+	var selected Node
+	for _, candidate := range nodes {
+		if candidate.Key != selector && (exact ||
+			(!strings.EqualFold(selector, candidate.Name) && !strings.EqualFold(selector, candidate.Host))) {
+			continue
+		}
+		if selected.Key != "" {
+			return Node{}, errors.New("multiple acceleration nodes match; select a unique node ID")
+		}
+		selected = candidate
+	}
+	if selected.Key == "" {
+		return Node{}, errors.New("no authorized VLESS/TLS acceleration node matches")
 	}
 	return selected, nil
+}
+
+func Profile(ctx context.Context, client *http.Client, session credential.UserSession, nodeKey string) ([]byte, error) {
+	nodes, err := Nodes(ctx, client, session)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := Select(nodes, nodeKey, true)
+	if err != nil {
+		return nil, err
+	}
+	return selected.profile, nil
 }
 
 const (
