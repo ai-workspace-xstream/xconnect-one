@@ -28,6 +28,7 @@ type wgHost struct {
 	ifaceName  string
 	peerPubHex string
 	localPort  int
+	keepalive  int
 }
 
 func newWGHost() *wgHost {
@@ -70,6 +71,7 @@ func (h *wgHost) Start(tunDev tun.Device, ifaceName, privKeyB64 string, cfg mode
 	h.ifaceName = ifaceName
 	h.peerPubHex = peerPubHex
 	h.localPort = localPort
+	h.keepalive = effectiveKeepalive(cfg.WireGuard.PersistentKeepalive)
 	h.mu.Unlock()
 	return nil
 }
@@ -93,6 +95,7 @@ func (h *wgHost) UpdateConfig(privKeyB64 string, cfg model.Config) error {
 	h.mu.Lock()
 	h.peerPubHex = peerPubHex
 	h.localPort = localPort
+	h.keepalive = effectiveKeepalive(cfg.WireGuard.PersistentKeepalive)
 	h.mu.Unlock()
 	return nil
 }
@@ -104,6 +107,7 @@ func (h *wgHost) NudgePeer() error {
 	dev := h.dev
 	peerPubHex := h.peerPubHex
 	localPort := h.localPort
+	keepalive := h.keepalive
 	h.mu.Unlock()
 	if dev == nil {
 		return errors.New("wireguard device is not running")
@@ -111,7 +115,14 @@ func (h *wgHost) NudgePeer() error {
 	if peerPubHex == "" || localPort <= 0 {
 		return errors.New("missing WireGuard peer or loopback port")
 	}
-	uapi := fmt.Sprintf("public_key=%s\nendpoint=127.0.0.1:%d\n", peerPubHex, localPort)
+	keepalive = effectiveKeepalive(keepalive)
+	// wireguard-go only dispatches an immediate keepalive/handshake when
+	// persistent_keepalive_interval transitions from 0 to a positive value.
+	resetUAPI := fmt.Sprintf("public_key=%s\npersistent_keepalive_interval=0\n", peerPubHex)
+	if err := dev.IpcSet(resetUAPI); err != nil {
+		return fmt.Errorf("wireguard reset keepalive: %w", err)
+	}
+	uapi := fmt.Sprintf("public_key=%s\nendpoint=127.0.0.1:%d\npersistent_keepalive_interval=%d\n", peerPubHex, localPort, keepalive)
 	if err := dev.IpcSet(uapi); err != nil {
 		return fmt.Errorf("wireguard nudge peer: %w", err)
 	}
@@ -157,12 +168,20 @@ func (h *wgHost) Close() error {
 	h.ifaceName = ""
 	h.peerPubHex = ""
 	h.localPort = 0
+	h.keepalive = 0
 	h.mu.Unlock()
 	if dev == nil {
 		return nil
 	}
 	dev.Close()
 	return nil
+}
+
+func effectiveKeepalive(keepalive int) int {
+	if keepalive <= 0 {
+		return 12
+	}
+	return keepalive
 }
 
 func buildUAPISetConfig(privKeyB64 string, cfg model.Config) (string, string, int, error) {
@@ -178,10 +197,7 @@ func buildUAPISetConfig(privKeyB64 string, cfg model.Config) (string, string, in
 	if localPort <= 0 {
 		return "", "", 0, errors.New("invalid local transport loopback port")
 	}
-	keepalive := cfg.WireGuard.PersistentKeepalive
-	if keepalive <= 0 {
-		keepalive = 25
-	}
+	keepalive := effectiveKeepalive(cfg.WireGuard.PersistentKeepalive)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%s\n", privHex)
