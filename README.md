@@ -46,20 +46,21 @@ sudo xconnect-one diagnose
 sudo xconnect-one down
 ```
 
-## 独立加速 | Linux VPS
+## 独立加速 | Linux / macOS / Windows
 
 ```bash
 xconnect accelerate login
 xconnect accelerate join
+# Linux / macOS
 sudo xconnect accelerate up
 # 在另一个终端
 sudo xconnect accelerate status
 sudo xconnect accelerate down
 ```
 
-已有 One 登录会话可直接运行 `accelerate join`。加速默认作用于发起 `sudo` 的普通用户。
-root 登录的 VPS 需要指定运行应用的普通用户 UID，例如
-`xconnect accelerate up --uid 1001`。`accelerate join` 会列出账号授权的加速节点，也可用 `--node <ID>` 直接选择。节点选择与 One 的 Gateway 独立。
+Windows 请以**管理员身份**打开终端运行 `xconnect accelerate up` / `status` / `down`。
+
+已有 One 登录会话可直接运行 `accelerate join`。Linux 下加速默认作用于发起 `sudo` 的普通用户（root 登录需加 `--uid 1001`）；macOS 与 Windows 下无需指定 `--uid`。`accelerate join` 会列出账号授权的加速节点，也可用 `--node <ID>` 直接选择。节点选择与 One 的 Gateway 独立。
 用 `--state-dir` 指定已有的登录目录。支持 VLESS/TLS 的 TCP 和 XHTTP 节点。
 `up` 在前台运行，Ctrl+C 也可停止。
 

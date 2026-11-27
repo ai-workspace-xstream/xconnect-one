@@ -115,12 +115,7 @@ func installRoutes(link netlink.Link, uid uint32) (func() error, error) {
 		}
 		return err
 	}
-	prefixes4 := publicPrefixes("0.0.0.0/0", []string{
-		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-		"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
-		"192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3",
-	})
-	prefixes6 := publicPrefixes("2000::/3", []string{"2001:db8::/32", "3fff::/20"})
+	prefixes4, prefixes6 := PublicRoutePrefixes()
 	for _, item := range []struct {
 		family   int
 		prefixes []netip.Prefix
@@ -149,32 +144,4 @@ func installRoutes(link netlink.Link, uid uint32) (func() error, error) {
 		}
 	}
 	return cleanup, nil
-}
-
-func publicPrefixes(root string, excluded []string) []netip.Prefix {
-	routes := []netip.Prefix{netip.MustParsePrefix(root)}
-	for _, cidr := range excluded {
-		e := netip.MustParsePrefix(cidr)
-		var next []netip.Prefix
-		for _, p := range routes {
-			next = appendWithout(next, p, e)
-		}
-		routes = next
-	}
-	return routes
-}
-
-func appendWithout(out []netip.Prefix, p, e netip.Prefix) []netip.Prefix {
-	if !p.Overlaps(e) {
-		return append(out, p)
-	}
-	if e.Bits() <= p.Bits() {
-		return out
-	}
-	bits := p.Bits()
-	addr := p.Addr().AsSlice()
-	addr[bits/8] |= 1 << (7 - bits%8)
-	right, _ := netip.AddrFromSlice(addr)
-	out = appendWithout(out, netip.PrefixFrom(p.Addr(), bits+1), e)
-	return appendWithout(out, netip.PrefixFrom(right, bits+1), e)
 }
