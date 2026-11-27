@@ -20,7 +20,8 @@ import (
 func runAccelerate(ctx context.Context, args []string, stdout, stderr io.Writer, client *http.Client, newRuntime runtimeFactory, newCredentials credentialFactory) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
 		fmt.Fprintln(stdout, "Usage: xconnect accelerate {login|join|up|status|down}")
-		fmt.Fprintln(stdout, "On Linux: log in, join an acceleration node, then run sudo xconnect accelerate up. On a root shell, add --uid <non-root-user-id>.")
+		fmt.Fprintln(stdout, "On Linux/macOS: log in, join an acceleration node, then run sudo xconnect accelerate up (on a Linux root shell, add --uid <non-root-user-id>).")
+		fmt.Fprintln(stdout, "On Windows: log in, join an acceleration node, then run xconnect accelerate up from an Administrator terminal.")
 		return nil
 	}
 	action, args := args[0], args[1:]
@@ -52,15 +53,18 @@ func runAccelerate(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if flags.NArg() != 0 {
 		return fault.New(fault.CodeInvalidInput, "unexpected positional arguments for accelerate", nil)
 	}
-	if runtime.GOOS != "linux" {
-		return errors.New("TUN acceleration is available on Linux")
+	if !accelerate.IsSupportedOS() {
+		return errors.New("TUN acceleration is available on Linux, macOS, and Windows")
 	}
 	dir := expandUserPath(*stateDir)
 	if action == "join" {
 		return joinAcceleration(ctx, client, dir, strings.TrimSpace(*nodeSelector), os.Stdin, stdout, isTerminal(os.Stdin))
 	}
-	if os.Geteuid() != 0 {
-		return errors.New("use sudo to manage Linux TUN acceleration")
+	if !accelerate.IsPrivileged() {
+		if runtime.GOOS == "windows" {
+			return errors.New("run from an elevated Administrator terminal to manage Windows TUN acceleration")
+		}
+		return errors.New("use sudo to manage TUN acceleration")
 	}
 	if action != "up" {
 		return accelerate.Control(ctx, action == "down", stdout)
@@ -68,9 +72,13 @@ func runAccelerate(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if !*foreground {
 		return errors.New("accelerate up runs in the foreground")
 	}
-	uid, ok := accelerationUID(*userID)
-	if !ok {
-		return fault.New(fault.CodeInvalidInput, "set --uid to the non-root Linux UID to accelerate", nil)
+	var uid uint32
+	if runtime.GOOS == "linux" {
+		var ok bool
+		uid, ok = accelerationUID(*userID)
+		if !ok {
+			return fault.New(fault.CodeInvalidInput, "set --uid to the non-root Linux UID to accelerate", nil)
+		}
 	}
 	return accelerate.Run(ctx, uid, func(ctx context.Context) ([]byte, error) {
 		session, err := credential.LoadUserSession(dir)
@@ -129,6 +137,10 @@ func joinAcceleration(ctx context.Context, client *http.Client, dir, selector st
 	if err := accelerate.SaveSelection(dir, session, selected); err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "Selected acceleration node %q. Next: sudo xconnect accelerate up.\n", selected.Name)
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(output, "Selected acceleration node %q. Next: run xconnect accelerate up as Administrator.\n", selected.Name)
+	} else {
+		fmt.Fprintf(output, "Selected acceleration node %q. Next: sudo xconnect accelerate up.\n", selected.Name)
+	}
 	return nil
 }

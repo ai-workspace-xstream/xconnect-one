@@ -24,6 +24,10 @@ import (
 
 const runtimeDir = "/run/xconnect-accelerate"
 
+func IsSupportedOS() bool { return true }
+
+func IsPrivileged() bool { return os.Geteuid() == 0 }
+
 func lockRuntime() (*os.File, error) {
 	if os.Geteuid() != 0 {
 		return nil, errors.New("use sudo to manage Linux TUN acceleration")
