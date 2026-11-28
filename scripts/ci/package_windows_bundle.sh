@@ -18,11 +18,14 @@ trap 'rm -rf "$work_dir"' EXIT
 
 mkdir -p "$dist_dir"
 
+source "$root/scripts/ci/version_ldflags.sh"
+ldflags="$(resolve_xconnect_ldflags "")"
+
 raw_exe="$dist_dir/xconnect-windows-${arch}.exe"
 one_exe="$dist_dir/xconnect-one-windows-${arch}.exe"
 CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build \
   -trimpath \
-  -ldflags="-s -w" \
+  -ldflags="$ldflags" \
   -o "$raw_exe" \
   ./cmd/xconnect
 cp "$raw_exe" "$one_exe"

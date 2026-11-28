@@ -26,9 +26,12 @@ raw_bin="$dist_dir/xconnect-linux-${arch}"
 one_bin="$dist_dir/xconnect-one-linux-${arch}"
 lab_bin="$dist_dir/xconnect-zero-lab-linux-${arch}"
 
+source "$root/scripts/ci/version_ldflags.sh"
+ldflags="$(resolve_xconnect_ldflags "$version")"
+
 CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
   -trimpath \
-  -ldflags="-s -w" \
+  -ldflags="$ldflags" \
   -o "$raw_bin" \
   ./cmd/xconnect
 cp "$raw_bin" "$one_bin"
