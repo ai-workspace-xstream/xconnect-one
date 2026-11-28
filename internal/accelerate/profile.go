@@ -15,7 +15,10 @@ import (
 	"github.com/ai-workspace-xstream/XConnect-One/overlay/credential"
 )
 
-const nodesPath = "/api/agent-server/v1/nodes"
+const (
+	nodesPath         = "/api/agent-server/v1/nodes"
+	legacyNodesPath   = "/api/agent/nodes"
+)
 
 type node struct {
 	ID      string `json:"id"`
@@ -37,38 +40,64 @@ func Nodes(ctx context.Context, client *http.Client, session credential.UserSess
 		server.RawQuery != "" || server.Fragment != "" {
 		return nil, errors.New("acceleration requires an HTTPS Accounts server")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.JoinPath(nodesPath).String(), nil)
-	if err != nil {
-		return nil, errors.New("invalid Accounts endpoint")
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+session.AccessToken)
 	requestClient := *client
 	requestClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if requestClient.Timeout == 0 {
 		requestClient.Timeout = 20 * time.Second
 	}
-	resp, err := requestClient.Do(req)
-	if err != nil {
-		return nil, errors.New("could not reach the Accounts node service")
+	var lastStatus int
+	for _, endpointPath := range []string{nodesPath, legacyNodesPath} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.JoinPath(endpointPath).String(), nil)
+		if err != nil {
+			return nil, errors.New("invalid Accounts endpoint")
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+session.AccessToken)
+		resp, err := requestClient.Do(req)
+		if err != nil {
+			return nil, errors.New("could not reach the Accounts node service")
+		}
+		lastStatus = resp.StatusCode
+		if resp.StatusCode == http.StatusOK {
+			const maxBytes = 2 << 20
+			body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+			_ = resp.Body.Close()
+			if err != nil || len(body) > maxBytes {
+				return nil, errors.New("invalid Accounts node response")
+			}
+			nodes, err := decodeNodesPayload(body)
+			if err != nil {
+				return nil, errors.New("invalid Accounts node response")
+			}
+			return supportedNodes(nodes), nil
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusNotFound {
+			break
+		}
 	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
+	switch lastStatus {
 	case http.StatusUnauthorized:
 		return nil, errors.New("Accounts session rejected; run xconnect accelerate login")
 	case http.StatusForbidden:
 		return nil, errors.New("Accounts did not authorize acceleration")
-	case http.StatusOK:
 	default:
-		return nil, fmt.Errorf("Accounts node service returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("Accounts node service returned HTTP %d", lastStatus)
 	}
-	const maxBytes = 2 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+}
+
+func decodeNodesPayload(body []byte) ([]node, error) {
 	var nodes []node
-	if err != nil || len(body) > maxBytes || json.Unmarshal(body, &nodes) != nil {
-		return nil, errors.New("invalid Accounts node response")
+	if err := json.Unmarshal(body, &nodes); err == nil {
+		return nodes, nil
 	}
-	return supportedNodes(nodes), nil
+	var wrapped struct {
+		Nodes []node `json:"nodes"`
+	}
+	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Nodes != nil {
+		return wrapped.Nodes, nil
+	}
+	return nil, errors.New("invalid node payload")
 }
 
 // Node exposes only the metadata needed for selection. The profile holds the

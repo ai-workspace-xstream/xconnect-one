@@ -52,3 +52,37 @@ func TestProfileRejectsPlaintextAndAmbiguousSelection(t *testing.T) {
 		t.Fatal("accepted an ambiguous gateway")
 	}
 }
+
+func TestNodesFallsBackToLegacyEndpointAndWrappedPayload(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case nodesPath:
+			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+		case legacyNodesPath:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"nodes": []node{
+					{
+						ID:    "jp-01",
+						Name:  "jp-01.example",
+						XHTTP: "vless://00000000-0000-0000-0000-000000000001@jp-01.example:443?encryption=none&type=xhttp&security=tls&host=jp-01.example&path=%2Fsplit&mode=auto&sni=jp-01.example&fp=chrome&alpn=h2%2Chttp%2F1.1%2Ch3#jp-01.example",
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	profile, err := Profile(context.Background(), server.Client(), credential.UserSession{
+		Server: server.URL, AccessToken: "opaque-session-token",
+	}, "jp-01")
+	if err != nil {
+		t.Fatalf("expected fallback to succeed: %v", err)
+	}
+	for _, want := range []string{`"path":"/split"`, `"mode":"auto"`, `"fingerprint":"chrome"`} {
+		if !strings.Contains(string(profile), want) {
+			t.Fatalf("profile missing %s: %s", want, string(profile))
+		}
+	}
+}
