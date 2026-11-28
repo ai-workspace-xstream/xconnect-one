@@ -108,6 +108,10 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Build macOS DMG and standalone binary (${{ matrix.arch }})
+        env:
+          XCONNECT_VERSION: v${{ needs.prepare-metadata.outputs.pkg_version }}
+          XCONNECT_BUILD_NUMBER: ${{ github.run_number }}
+          XCONNECT_GIT_COMMIT: ${{ github.sha }}
         run: bash ./scripts/ci/package_macos_dmg.sh "${{ matrix.arch }}"
       - uses: actions/upload-artifact@v4
         with:
@@ -126,6 +130,10 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Build Windows zero-dependency binary and portable zip
+        env:
+          XCONNECT_VERSION: v${{ needs.prepare-metadata.outputs.pkg_version }}
+          XCONNECT_BUILD_NUMBER: ${{ github.run_number }}
+          XCONNECT_GIT_COMMIT: ${{ github.sha }}
         run: bash ./scripts/ci/package_windows_bundle.sh amd64
       - uses: actions/upload-artifact@v4
         with:
@@ -148,6 +156,10 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Build Linux static binaries, portable archives, and deb/rpm (${{ matrix.arch }})
+        env:
+          XCONNECT_VERSION: v${{ needs.prepare-metadata.outputs.pkg_version }}
+          XCONNECT_BUILD_NUMBER: ${{ github.run_number }}
+          XCONNECT_GIT_COMMIT: ${{ github.sha }}
         run: >-
           bash ./scripts/ci/package_linux.sh
           "${{ matrix.arch }}"

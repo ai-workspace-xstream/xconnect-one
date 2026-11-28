@@ -18,10 +18,13 @@ trap 'rm -rf "$stage_dir"' EXIT
 
 mkdir -p "$dist_dir"
 
+source "$root/scripts/ci/version_ldflags.sh"
+ldflags="$(resolve_xconnect_ldflags "")"
+
 raw_bin="$dist_dir/xconnect-macos-${arch}"
 CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build \
   -trimpath \
-  -ldflags="-s -w" \
+  -ldflags="$ldflags" \
   -o "$raw_bin" \
   ./cmd/xconnect
 
